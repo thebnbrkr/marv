@@ -1,0 +1,79 @@
+"""Adapter + extraction sanity checks on a tiny synthetic Llama-style model
+-- no network access, no real checkpoint download, so this runs anywhere."""
+from __future__ import annotations
+
+import numpy as np
+import torch
+from transformers import LlamaConfig, LlamaForCausalLM
+
+from marv.arch import LlamaStyleFFN, detect_adapter
+from marv.diff import diff, most_changed
+from marv.extract import extract
+from marv.probe import describe_feature, logit_lens, top_features
+
+
+def tiny_model():
+    config = LlamaConfig(
+        vocab_size=64,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=2,
+        num_attention_heads=2,
+        num_key_value_heads=2,
+        max_position_embeddings=32,
+    )
+    torch.manual_seed(0)
+    return LlamaForCausalLM(config)
+
+
+def test_detect_adapter_returns_llama_style():
+    model = tiny_model()
+    assert isinstance(detect_adapter(model), LlamaStyleFFN)
+
+
+def test_extract_shapes():
+    model = tiny_model()
+    vindex = extract(model)
+    assert vindex.num_layers == 2
+    assert vindex.hidden_size == 16
+    for layer in range(vindex.num_layers):
+        assert vindex.gate[layer].shape == (32, 16)
+        assert vindex.down[layer].shape == (16, 32)
+    assert vindex.lm_head.shape == (64, 16)
+
+
+def test_probe_runs_and_shapes_match():
+    model = tiny_model()
+    vindex = extract(model)
+    query = vindex.gate[0][3]  # a real gate row should match itself best
+    hits = top_features(vindex, layer=0, query=query, k=5)
+    assert hits[0][0] == 3
+    assert hits[0][1] > 0.99
+
+    tok_ids, logits = describe_feature(vindex, layer=0, feature_idx=3, k=4)
+    assert tok_ids.shape == (4,)
+    assert logits.shape == (4,)
+
+    idx, logits = logit_lens(vindex, np.zeros(16, dtype=np.float32), k=4)
+    assert idx.shape == (4,)
+
+
+def test_diff_identical_model_is_all_ones():
+    model = tiny_model()
+    vindex = extract(model)
+    deltas = diff(vindex, vindex)
+    assert all(abs(d.gate_cos_sim - 1.0) < 1e-5 for d in deltas)
+    assert most_changed(deltas, k=3)[0].gate_cos_sim <= 1.0 + 1e-5
+
+
+def test_diff_detects_perturbed_feature():
+    model = tiny_model()
+    vindex_base = extract(model)
+    vindex_tuned = extract(model)
+    vindex_tuned.gate[1][7] = -vindex_tuned.gate[1][7]  # flip one feature's direction
+
+    deltas = diff(vindex_base, vindex_tuned)
+    worst = most_changed(deltas, k=1)[0]
+    assert worst.layer == 1
+    assert worst.feature_idx == 7
+    assert worst.gate_cos_sim < -0.99

@@ -1,0 +1,21 @@
+[project]
+name = "marv"
+version = "0.1.0"
+description = "Model Architecture Research via Vindex — turns a transformer's gated FFN weights into an inspectable index for browsing model knowledge and diffing checkpoints."
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "transformers>=4.40",
+    "numpy>=1.24",
+    "accelerate>=0.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["marv*"]
