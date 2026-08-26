@@ -92,6 +92,34 @@ def layer_trace(hm: LayerFeatureHeatmap, feature_index: int) -> np.ndarray:
     return hm.matrix[:, feature_index]
 
 
+def top_features_per_layer(hm: LayerFeatureHeatmap, n: int = 10) -> list[list[tuple[int, float]]]:
+    """Per layer, the top `n` firing features (not just the single max) --
+    one entry per row of `hm.layers`, each a list of (feature_id, value)
+    sorted descending. Useful for seeing which features *dominate* a layer
+    together, not just which one peaks."""
+    out = []
+    for row in hm.matrix:
+        idx = np.argsort(-row)[:n]
+        out.append([(int(i), float(row[i])) for i in idx])
+    return out
+
+
+def layer_attribution(hm: LayerFeatureHeatmap, mode: str = "l2") -> np.ndarray:
+    """Total activation per layer -- one scalar per layer summarizing how
+    much that layer's features responded overall, as opposed to the identity
+    of any single feature. `mode="l2"` (default, sqrt(sum(x^2))) treats
+    strong activations in either direction as contributing; `"sum_abs"` sums
+    magnitudes directly; a plain signed sum is deliberately not offered here
+    since positive and negative cosine similarities would cancel and the
+    result would understate how active a layer actually was.
+    """
+    if mode == "l2":
+        return np.sqrt((hm.matrix**2).sum(axis=1))
+    elif mode == "sum_abs":
+        return np.abs(hm.matrix).sum(axis=1)
+    raise ValueError(f"unknown mode {mode!r}, expected 'l2' or 'sum_abs'")
+
+
 def plot(hm: LayerFeatureHeatmap, title: str = "", cmap: str = "viridis", vmin=None, vmax=None):
     """Matplotlib heatmap: feature index on x, layer on y, color = cosine
     similarity. Requires matplotlib (already present in Colab)."""
@@ -105,5 +133,56 @@ def plot(hm: LayerFeatureHeatmap, title: str = "", cmap: str = "viridis", vmin=N
     ax.set_ylabel("layer")
     ax.set_title(title or f"activation heatmap: {hm.prompt!r}")
     fig.colorbar(im, ax=ax, label="cosine similarity")
+    fig.tight_layout()
+    return fig
+
+
+def plot_comparison(hm_a: LayerFeatureHeatmap, hm_b: LayerFeatureHeatmap, title: str = ""):
+    """One figure, four panels sharing a single color scale so the two
+    prompts are actually visually comparable (two separately-scaled imshow
+    calls, as the earlier notebook used, can look equally 'bright' even when
+    the underlying magnitudes differ):
+
+        [ hm_a heatmap ] [ hm_b heatmap ]
+        [ difference    ] [ per-layer L2 attribution, both prompts overlaid ]
+    """
+    import matplotlib.pyplot as plt
+
+    if hm_a.layers != hm_b.layers:
+        raise ValueError("plot_comparison needs two heatmaps computed over the same layers")
+
+    vmax = max(np.abs(hm_a.matrix).max(), np.abs(hm_b.matrix).max())
+    diff_hm = difference(hm_a, hm_b)
+    dvmax = np.abs(diff_hm.matrix).max()
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, max(6, len(hm_a.layers) * 0.4)))
+
+    for ax, hm, label in ((axes[0, 0], hm_a, hm_a.prompt), (axes[0, 1], hm_b, hm_b.prompt)):
+        im = ax.imshow(hm.matrix, aspect="auto", cmap="viridis", vmin=-vmax, vmax=vmax, origin="lower")
+        ax.set_yticks(range(len(hm.layers)))
+        ax.set_yticklabels(hm.layers, fontsize=6)
+        ax.set_xlabel("feature index")
+        ax.set_ylabel("layer")
+        ax.set_title(label, fontsize=9)
+        fig.colorbar(im, ax=ax, label="cosine similarity")
+
+    ax = axes[1, 0]
+    im = ax.imshow(diff_hm.matrix, aspect="auto", cmap="coolwarm", vmin=-dvmax, vmax=dvmax, origin="lower")
+    ax.set_yticks(range(len(hm_a.layers)))
+    ax.set_yticklabels(hm_a.layers, fontsize=6)
+    ax.set_xlabel("feature index")
+    ax.set_ylabel("layer")
+    ax.set_title(f"difference ({hm_a.prompt!r} minus {hm_b.prompt!r})", fontsize=9)
+    fig.colorbar(im, ax=ax, label="cosine similarity delta")
+
+    ax = axes[1, 1]
+    ax.plot(hm_a.layers, layer_attribution(hm_a), marker="o", label=hm_a.prompt)
+    ax.plot(hm_b.layers, layer_attribution(hm_b), marker="o", label=hm_b.prompt)
+    ax.set_xlabel("layer")
+    ax.set_ylabel("L2 attribution")
+    ax.set_title("per-layer total activation", fontsize=9)
+    ax.legend(fontsize=7)
+
+    fig.suptitle(title or "prompt comparison")
     fig.tight_layout()
     return fig

@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from marv.arch import LlamaStyleFFN, detect_adapter
-from marv.diff import diff, most_changed
+from marv.clustering import PromptActivations, cluster_features
+from marv.diff import FeatureDelta, diff, most_changed, per_layer_score
 from marv.extract import extract
 from marv.heatmap import ActivationMatrix, polysemantic_features
-from marv.layer_heatmap import LayerFeatureHeatmap, difference, layer_trace, peak_activation_trace
+from marv.layer_heatmap import (
+    LayerFeatureHeatmap,
+    difference,
+    layer_attribution,
+    layer_trace,
+    peak_activation_trace,
+    top_features_per_layer,
+)
 from marv.probe import describe_feature, logit_lens, top_features
 
 
@@ -128,3 +137,55 @@ def test_layer_heatmap_difference():
     b = LayerFeatureHeatmap(prompt="b", layers=[0, 1], matrix=np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32))
     d = difference(a, b)
     np.testing.assert_allclose(d.matrix, [[0.4, 0.0], [0.0, -0.3]])
+
+
+def test_per_layer_score_max_and_mean_topk():
+    deltas = [
+        FeatureDelta(layer=0, feature_idx=0, gate_cos_sim=0.999, down_cos_sim=0.999, gate_norm_ratio=1.0),
+        FeatureDelta(layer=0, feature_idx=1, gate_cos_sim=0.5, down_cos_sim=0.999, gate_norm_ratio=1.0),
+        FeatureDelta(layer=1, feature_idx=0, gate_cos_sim=0.999, down_cos_sim=0.999, gate_norm_ratio=1.0),
+    ]
+    scores = per_layer_score(deltas, metric="max")
+    assert scores[0] == pytest.approx(0.5)
+    assert scores[1] == pytest.approx(0.001)
+
+    mean_scores = per_layer_score(deltas, metric="mean_topk")
+    # layer 0 has only 2 features, both included in the top-5 average
+    assert mean_scores[0] == pytest.approx((0.001 + 0.5) / 2)
+
+
+def test_top_features_per_layer_and_layer_attribution():
+    hm = LayerFeatureHeatmap(
+        prompt="test",
+        layers=[0, 1],
+        matrix=np.array([[0.1, 0.9, 0.3], [0.4, 0.2, 0.05]], dtype=np.float32),
+    )
+    top = top_features_per_layer(hm, n=2)
+    assert top[0] == [(1, pytest.approx(0.9)), (2, pytest.approx(0.3))]
+    assert top[1] == [(0, pytest.approx(0.4)), (1, pytest.approx(0.2))]
+
+    l2 = layer_attribution(hm, mode="l2")
+    np.testing.assert_allclose(l2, np.sqrt((hm.matrix**2).sum(axis=1)))
+    sum_abs = layer_attribution(hm, mode="sum_abs")
+    np.testing.assert_allclose(sum_abs, np.abs(hm.matrix).sum(axis=1))
+
+
+def test_cluster_features_finds_group_specific_columns():
+    # f0 fires for "tool" prompts only; f1 fires for everything (not a
+    # cluster feature); f2 is noise everywhere.
+    pa = PromptActivations(
+        prompts=["call the tool", "use the function", "what is this", "tell me a fact"],
+        groups=["tool", "tool", "plain", "plain"],
+        layer=10,
+        matrix=np.array(
+            [
+                [0.30, 0.25, 0.02],
+                [0.28, 0.22, 0.01],
+                [0.02, 0.24, 0.03],
+                [0.01, 0.20, 0.02],
+            ],
+            dtype=np.float32,
+        ),
+    )
+    tool_features = cluster_features(pa, "tool", min_group_activation=0.2, other_threshold=0.1, top_n=5)
+    assert tool_features == [0]

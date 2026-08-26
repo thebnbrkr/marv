@@ -5,3 +5,4 @@ accelerate>=0.30
 huggingface_hub>=0.23
 pytest>=8.0
 matplotlib>=3.7
+scikit-learn>=1.3

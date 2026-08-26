@@ -67,3 +67,32 @@ def most_changed(deltas: list[FeatureDelta], k: int = 20) -> list[FeatureDelta]:
     """Rank by how much the feature's *input direction* moved -- a small,
     portable record of exactly which neurons fine-tuning actually touched."""
     return sorted(deltas, key=lambda d: d.gate_cos_sim)[:k]
+
+
+def per_layer_score(deltas: list[FeatureDelta], metric: str = "max") -> dict[int, float]:
+    """Collapse per-feature deltas to one weight-change score per layer, so a
+    layer ranking from `diff()` can be compared against a layer ranking from
+    something else (e.g. marv.layer_heatmap's per-prompt activation
+    divergence) instead of eyeballing which layers show up in a top-k list.
+
+    Most features in any layer barely move (gate_cos_sim ~0.999+), so a plain
+    per-layer mean would drown out the handful that actually changed --
+    `metric="max"` (default) reports the single most-changed feature's score
+    per layer, matching what `most_changed()` already surfaces. `"mean_topk"`
+    averages the top 5 changed features per layer instead, for a slightly
+    less single-outlier-sensitive summary.
+    """
+    by_layer: dict[int, list[float]] = {}
+    for d in deltas:
+        by_layer.setdefault(d.layer, []).append(1.0 - d.gate_cos_sim)
+
+    scores: dict[int, float] = {}
+    for layer, changes in by_layer.items():
+        if metric == "max":
+            scores[layer] = max(changes)
+        elif metric == "mean_topk":
+            top = sorted(changes, reverse=True)[:5]
+            scores[layer] = sum(top) / len(top)
+        else:
+            raise ValueError(f"unknown metric {metric!r}, expected 'max' or 'mean_topk'")
+    return scores
