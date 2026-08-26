@@ -13,8 +13,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from marv.diff import diff, most_changed
 from marv.extract import extract
-from marv.probe import describe
-from marv.toolcall import DEFAULT_TOOL_PROMPTS, compare_tool_prompt, hidden_states_at_layers
+from marv.toolcall import (
+    DEFAULT_TOOL_PROMPTS,
+    compare_tool_prompt,
+    describe_prompt,
+    hidden_states_at_layers,
+)
 
 BASE_135M = "HuggingFaceTB/SmolLM2-135M-Instruct"
 TUNED_135M = "gvij/SmolLM2-135M-Function-Calling"
@@ -22,6 +26,8 @@ INSTRUCT_1_7B = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
 
 # Concept probes -- what fires for these words, and what does it promote.
 PROBE_WORDS = ["weather", "function", "France"]
+PROBE_TEMPLATE = "I want to talk about {word}"
+PROBE_BASELINE = "I want to talk about"
 
 
 def load(name: str):
@@ -31,18 +37,23 @@ def load(name: str):
     return model, tok
 
 
-def concept_probe(vindex, tok, label: str, words=PROBE_WORDS):
-    """Embed each word, KNN over the gate rows of a late layer (logit lens is
-    only reliably legible in roughly the last third of the model -- early/mid
-    layers haven't rotated into an output-ready basis yet), and label the
-    firing features by what they promote."""
+def concept_probe(vindex, model, tok, label: str, words=PROBE_WORDS, device: str = "cpu"):
+    """Run each word through the live model in a short template sentence
+    (contextual hidden state, not a bare embedding row -- see
+    marv.toolcall.describe_prompt), differenced against the template alone to
+    cancel out the dominant prompt-invariant direction, KNN over the gate
+    rows of a late layer (logit lens is only reliably legible in roughly the
+    last third of the model), and label the firing features by what they
+    promote."""
     print(f"\n--- concept probe: {label} ---")
     late_layers = [round(vindex.num_layers * frac) for frac in (0.7, 0.85)]
     late_layers = sorted(set(l for l in late_layers if l < vindex.num_layers))
     for word in words:
-        token_id = tok.encode(word, add_special_tokens=False)[-1]
-        query = vindex.embed[token_id]
-        hits = describe(vindex, query, layers=late_layers, k_features=3, k_tokens=3)
+        prompt = PROBE_TEMPLATE.format(word=word)
+        hits = describe_prompt(
+            vindex, model, tok, prompt, layers=late_layers, k_features=3, k_tokens=3,
+            device=device, baseline_prompt=PROBE_BASELINE,
+        )
         print(f"'{word}':")
         for layer, features in hits.items():
             for feature_idx, sim, tok_ids, logits in features:
@@ -59,8 +70,8 @@ def main():
     tuned_model, tuned_tok = load(TUNED_135M)
     vindex_tuned = extract(tuned_model, model_name=TUNED_135M)
 
-    concept_probe(vindex_base, base_tok, "base")
-    concept_probe(vindex_tuned, tuned_tok, "tool-tuned")
+    concept_probe(vindex_base, base_model, base_tok, "base")
+    concept_probe(vindex_tuned, tuned_model, tuned_tok, "tool-tuned")
 
     print("\n--- diff: which features moved most during tool-call fine-tuning ---")
     deltas = diff(vindex_base, vindex_tuned)
