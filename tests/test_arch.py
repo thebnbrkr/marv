@@ -10,6 +10,7 @@ from marv.arch import LlamaStyleFFN, detect_adapter
 from marv.diff import diff, most_changed
 from marv.extract import extract
 from marv.heatmap import ActivationMatrix, polysemantic_features
+from marv.layer_heatmap import LayerFeatureHeatmap, difference, layer_trace, peak_activation_trace
 from marv.probe import describe_feature, logit_lens, top_features
 
 
@@ -100,3 +101,30 @@ def test_polysemantic_features_flags_shared_columns():
     poly = polysemantic_features(am, threshold=0.15, min_categories=2)
     assert set(poly.keys()) == {0}
     assert poly[0] == {"factual", "instruction"}
+
+
+def test_peak_activation_trace_and_layer_trace():
+    # 3 layers x 4 features: layer 1's peak is feature 2, others are flat.
+    hm = LayerFeatureHeatmap(
+        prompt="test",
+        layers=[0, 1, 2],
+        matrix=np.array(
+            [
+                [0.1, 0.1, 0.1, 0.1],
+                [0.1, 0.1, 0.9, 0.1],
+                [0.2, 0.2, 0.2, 0.2],
+            ],
+            dtype=np.float32,
+        ),
+    )
+    peak_values, peak_features = peak_activation_trace(hm)
+    np.testing.assert_allclose(peak_values, [0.1, 0.9, 0.2])
+    assert list(peak_features) == [0, 2, 0]  # argmax ties resolve to the first index
+    np.testing.assert_allclose(layer_trace(hm, 2), [0.1, 0.9, 0.2])
+
+
+def test_layer_heatmap_difference():
+    a = LayerFeatureHeatmap(prompt="a", layers=[0, 1], matrix=np.array([[0.5, 0.2], [0.3, 0.1]], dtype=np.float32))
+    b = LayerFeatureHeatmap(prompt="b", layers=[0, 1], matrix=np.array([[0.1, 0.2], [0.3, 0.4]], dtype=np.float32))
+    d = difference(a, b)
+    np.testing.assert_allclose(d.matrix, [[0.4, 0.0], [0.0, -0.3]])
