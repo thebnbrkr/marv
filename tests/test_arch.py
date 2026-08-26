@@ -9,6 +9,7 @@ from transformers import LlamaConfig, LlamaForCausalLM
 from marv.arch import LlamaStyleFFN, detect_adapter
 from marv.diff import diff, most_changed
 from marv.extract import extract
+from marv.heatmap import ActivationMatrix, polysemantic_features
 from marv.probe import describe_feature, logit_lens, top_features
 
 
@@ -77,3 +78,25 @@ def test_diff_detects_perturbed_feature():
     assert worst.layer == 1
     assert worst.feature_idx == 7
     assert worst.gate_cos_sim < -0.99
+
+
+def test_polysemantic_features_flags_shared_columns():
+    # 3 words x 4 features. f0 fires for both categories (polysemantic);
+    # f1 only for "factual"; f2/f3 are noise below threshold everywhere.
+    am = ActivationMatrix(
+        words=["paris", "capital", "summarize"],
+        categories=["factual", "factual", "instruction"],
+        feature_ids=[0, 1, 2, 3],
+        layer=5,
+        matrix=np.array(
+            [
+                [0.30, 0.25, 0.05, 0.02],
+                [0.28, 0.22, 0.04, 0.03],
+                [0.31, 0.05, 0.03, 0.01],
+            ],
+            dtype=np.float32,
+        ),
+    )
+    poly = polysemantic_features(am, threshold=0.15, min_categories=2)
+    assert set(poly.keys()) == {0}
+    assert poly[0] == {"factual", "instruction"}
