@@ -31,10 +31,20 @@ def top_features(vindex: VindexLite, layer: int, query: np.ndarray, k: int = 10)
 def logit_lens(vindex: VindexLite, vector: np.ndarray, k: int = 10, rms_norm: bool = True):
     """Project a residual-space vector through (RMSNorm +) lm_head -- 'what
     does this direction mean in vocab space.' Returns (top_k_token_ids,
-    their_logits)."""
+    their_logits).
+
+    Applies the model's *actual* learned final-norm gain (per-channel
+    weight), not just a scalar RMS normalization -- skipping that gain means
+    the projection is dominated by whichever raw hidden dims happen to have
+    large magnitude, rather than by what the model's own norm layer actually
+    passes through to the unembedding. Without `final_norm_weight` (e.g. an
+    older saved vindex) this falls back to plain unit-RMS scaling.
+    """
     v = vector
     if rms_norm:
-        v = v / (np.sqrt((v**2).mean()) + 1e-6)
+        v = v / (np.sqrt((v**2).mean() + vindex.norm_eps))
+        if vindex.final_norm_weight is not None:
+            v = v * vindex.final_norm_weight
     logits = vindex.lm_head @ v
     idx = np.argsort(-logits)[:k]
     return idx, logits[idx]

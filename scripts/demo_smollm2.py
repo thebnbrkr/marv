@@ -13,12 +13,15 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from marv.diff import diff, most_changed
 from marv.extract import extract
-from marv.probe import describe_feature
+from marv.probe import describe
 from marv.toolcall import DEFAULT_TOOL_PROMPTS, compare_tool_prompt, hidden_states_at_layers
 
 BASE_135M = "HuggingFaceTB/SmolLM2-135M-Instruct"
 TUNED_135M = "gvij/SmolLM2-135M-Function-Calling"
 INSTRUCT_1_7B = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+
+# Concept probes -- what fires for these words, and what does it promote.
+PROBE_WORDS = ["weather", "function", "France"]
 
 
 def load(name: str):
@@ -28,15 +31,23 @@ def load(name: str):
     return model, tok
 
 
-def describe_top_layers(vindex, tok, label: str, layers=(3, 6, 9)):
-    print(f"\n--- sample feature labels: {label} ---")
-    for layer in layers:
-        if layer >= vindex.num_layers:
-            continue
-        # First feature in the layer is an arbitrary but stable pick across checkpoints.
-        tok_ids, logits = describe_feature(vindex, layer=layer, feature_idx=0)
-        words = tok.batch_decode([[t] for t in tok_ids])
-        print(f"L{layer} feature 0 -> {list(zip(words, [round(l, 2) for l in logits]))}")
+def concept_probe(vindex, tok, label: str, words=PROBE_WORDS):
+    """Embed each word, KNN over the gate rows of a late layer (logit lens is
+    only reliably legible in roughly the last third of the model -- early/mid
+    layers haven't rotated into an output-ready basis yet), and label the
+    firing features by what they promote."""
+    print(f"\n--- concept probe: {label} ---")
+    late_layers = [round(vindex.num_layers * frac) for frac in (0.7, 0.85)]
+    late_layers = sorted(set(l for l in late_layers if l < vindex.num_layers))
+    for word in words:
+        token_id = tok.encode(word, add_special_tokens=False)[-1]
+        query = vindex.embed[token_id]
+        hits = describe(vindex, query, layers=late_layers, k_features=3, k_tokens=3)
+        print(f"'{word}':")
+        for layer, features in hits.items():
+            for feature_idx, sim, tok_ids, logits in features:
+                words_out = tok.batch_decode([[t] for t in tok_ids])
+                print(f"  L{layer} f{feature_idx} (sim={sim:.2f}) -> {words_out}")
 
 
 def main():
@@ -48,8 +59,8 @@ def main():
     tuned_model, tuned_tok = load(TUNED_135M)
     vindex_tuned = extract(tuned_model, model_name=TUNED_135M)
 
-    describe_top_layers(vindex_base, base_tok, "base")
-    describe_top_layers(vindex_tuned, tuned_tok, "tool-tuned")
+    concept_probe(vindex_base, base_tok, "base")
+    concept_probe(vindex_tuned, tuned_tok, "tool-tuned")
 
     print("\n--- diff: which features moved most during tool-call fine-tuning ---")
     deltas = diff(vindex_base, vindex_tuned)
@@ -60,7 +71,11 @@ def main():
         )
 
     print("\n--- tool-call decision point: base vs. tuned logit lens ---")
-    probe_layers = list(range(0, vindex_base.num_layers, 3))
+    # Last third of the model only -- logit lens on early/mid-layer residuals
+    # generally doesn't decode to legible tokens (the stream hasn't rotated
+    # into an output-ready basis yet), so those layers mostly show noise.
+    start = max(1, round(vindex_base.num_layers * 0.66))
+    probe_layers = list(range(start, vindex_base.num_layers, 3))
     for prompt in DEFAULT_TOOL_PROMPTS:
         print(f"\nprompt: {prompt!r}")
         h_base = hidden_states_at_layers(base_model, base_tok, prompt, probe_layers)
