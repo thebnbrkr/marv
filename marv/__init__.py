@@ -30,6 +30,13 @@ from .layer_heatmap import compute as layer_feature_heatmap
 from .layer_heatmap import difference as layer_heatmap_difference
 from .layer_heatmap import layer_trace, peak_activation_trace, plot_comparison
 from .clustering import PromptActivations, cluster_features, prompt_activations, reduce_pca, reduce_tsne
+from .batteries import (
+    WORLD_CAPITALS,
+    broad_controls,
+    capital_edit_battery,
+    capital_probes,
+    domain_probes,
+)
 
 __all__ = [
     # architecture + extraction
@@ -88,4 +95,10 @@ __all__ = [
     "reduce_pca",
     "reduce_tsne",
     "cluster_features",
+    # curated probe batteries
+    "WORLD_CAPITALS",
+    "capital_probes",
+    "domain_probes",
+    "broad_controls",
+    "capital_edit_battery",
 ]

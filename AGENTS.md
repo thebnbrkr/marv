@@ -81,6 +81,9 @@ marv/
                  rank_by_ablation_effect (causal constellation — rank candidates by
                    measured target-prob drop when suppressed alone),
                  BatteryDiff.show(full=) / .metrics() (per-tag efficacy vs collateral)
+  batteries.py   curated probe sets: WORLD_CAPITALS + SCIENCE/LEXICAL/MATH/HISTORY/
+                 COMMONSENSE lists, broad_controls() (~110 tagged by sub-domain),
+                 capital_edit_battery(country, capital, neighbours). Pure data.
   toolcall.py    OPTIONAL domain layer — tool-calling prompt scaffolds over context.py.
                  Nothing requires this file; ignore it for non-tool-call work.
   heatmap.py / layer_heatmap.py / clustering.py   polysemanticity + activation heatmaps
