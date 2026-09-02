@@ -10,9 +10,11 @@ from marv.edit import ablate, restore, suppress
 from marv.evaluate import (
     Probe,
     diff_battery,
+    frontier_table,
     rank_by_ablation_effect,
     run_battery,
     study_edit,
+    suppression_by_layer,
     suppression_frontier,
 )
 from marv.extract import default_layer_bands, extract
@@ -189,6 +191,35 @@ def test_metrics_and_frontier():
     sweep = suppression_frontier(model, tok, [(1, 7), (1, 12), (2, 3), (2, 9)], battery, sizes=[0, 2, 4])
     assert [n for n, _ in sweep] == [0, 2, 4]
     assert all(d.metrics()["target"]["moved"] == 0.0 for n, d in sweep if n == 0)
+
+    tbl = list(frontier_table(sweep, target="target", collateral="neighbour"))
+    assert [row[0] for row in tbl] == [0, 2, 4]
+    assert all(len(row) == 4 for row in tbl)
+    assert tbl[0][1] == 0.0 and tbl[0][2] == 0.0  # n=0: nothing suppressed
+
+
+def test_suppression_by_layer_splits_constellation_across_layers():
+    model, tok = tiny_model(), FakeTok()
+    battery = [
+        Probe("the capital of France is", "Paris", ("target",)),
+        Probe("the capital of Italy is", "Rome", ("neighbour",)),
+        Probe("the language of France is", "French", ("control",)),
+    ]
+    con = [(1, 7), (1, 12), (2, 3)]  # two features at L1, one at L2
+
+    rows = suppression_by_layer(model, tok, con, battery)
+    assert [layer for layer, _, _ in rows] == [1, 2]
+    assert dict((layer, feats) for layer, feats, _ in rows)[1] == (7, 12)
+    assert dict((layer, feats) for layer, feats, _ in rows)[2] == (3,)
+    for _, _, d in rows:
+        m = d.metrics()
+        assert {"target", "neighbour", "control", "_all"} <= set(m)
+
+    cum = suppression_by_layer(model, tok, con, battery, cumulative=True)
+    assert [layer for layer, _, _ in cum] == [1, 2]
+    # cumulative L2 row suppresses all 3 features -> matches a direct study_edit
+    full = study_edit(model, tok, suppress(model, con), battery)
+    assert [r.verdict for r in cum[-1][2].rows] == [r.verdict for r in full.rows]
 
 
 def test_target_token_ids_prefers_leading_space_variant():

@@ -74,6 +74,10 @@ marv/
                                     contextual (sharp) query instead of the bare embedding
   evaluate.py    Probe (target_ids: candidate first-token ids, " Paris" vs "Paris"),
                  run_battery, diff_battery, study_edit, suppression_frontier,
+                 suppression_by_layer (per-layer breakdown of a constellation edit —
+                   which layers of the constellation are load-bearing vs just KNN hits;
+                   cumulative= for the depth the effect saturates at),
+                 frontier_table (a suppression_frontier sweep as plain (n, drop, drop, moved) rows),
                  rank_by_ablation_effect (causal constellation — rank candidates by
                    measured target-prob drop when suppressed alone),
                  BatteryDiff.show(full=) / .metrics() (per-tag efficacy vs collateral)

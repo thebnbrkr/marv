@@ -17,9 +17,11 @@ from .evaluate import (
     BatteryResult,
     Probe,
     diff_battery,
+    frontier_table,
     run_battery,
     rank_by_ablation_effect,
     study_edit,
+    suppression_by_layer,
     suppression_frontier,
 )
 from .heatmap import ActivationMatrix, activation_matrix, polysemantic_features
@@ -64,6 +66,8 @@ __all__ = [
     "diff_battery",
     "study_edit",
     "suppression_frontier",
+    "suppression_by_layer",
+    "frontier_table",
     "rank_by_ablation_effect",
     "BatteryResult",
     "BatteryDiff",

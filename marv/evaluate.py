@@ -283,6 +283,72 @@ def rank_by_ablation_effect(model, tokenizer, candidates, probes, device: str = 
     return scored
 
 
+def suppression_by_layer(
+    model,
+    tokenizer,
+    constellation_feats,
+    battery,
+    device: str = "cpu",
+    cumulative: bool = False,
+):
+    """Break a constellation edit down **by layer**.
+
+    Group `constellation_feats` (a list of (layer, feature)) by layer; for
+    each layer, suppress *only* that layer's slice of the constellation and
+    diff the battery against the unedited baseline.
+
+    A fact's constellation spans several layers, but they rarely carry it
+    equally. Layers whose slice moves the target are where the fact actually
+    lives; layers that have features in the constellation but produce ~zero
+    target effect were geometric KNN hits, not causal -- "in the constellation
+    but not load-bearing." This is the per-layer view of
+    `rank_by_ablation_effect`'s per-feature one.
+
+    `cumulative=False` (default): each layer measured in isolation.
+    `cumulative=True`: suppress layers shallow->deep, adding one layer's slice
+    at a time -- shows the depth at which the edit's effect saturates.
+
+    Returns `[(layer, features_at_layer, BatteryDiff), ...]` ordered by layer.
+    Read `d.metrics()['<target tag>']['mean_dprob']` (efficacy contributed by
+    that layer) against a neighbour/control tag's (collateral from that layer).
+    """
+    from .edit import suppress
+
+    by_layer: dict[int, list[int]] = {}
+    for layer, feat in constellation_feats:
+        by_layer.setdefault(int(layer), []).append(int(feat))
+
+    base = run_battery(model, tokenizer, battery, device)
+    acc: list[tuple[int, int]] = []
+    out = []
+    for layer in sorted(by_layer):
+        feats_here = by_layer[layer]
+        acc += [(layer, f) for f in feats_here]
+        active = acc if cumulative else [(layer, f) for f in feats_here]
+        with suppress(model, active):
+            after = run_battery(model, tokenizer, battery, device)
+        out.append((layer, tuple(feats_here), diff_battery(base, after)))
+    return out
+
+
+def frontier_table(sweep, target: str = "target", collateral: str = "neighbour"):
+    """Turn a `suppression_frontier()` sweep into plain rows:
+    `(n, target_prob_drop, collateral_prob_drop, collateral_moved_fraction)`.
+
+    Probabilities are drops (positive = the edit removed that much target /
+    collateral probability). Use it when you want the frontier as a
+    table/CSV rather than the two plots.
+    """
+    for n, d in sweep:
+        m = d.metrics()
+        yield (
+            n,
+            -m.get(target, {}).get("mean_dprob", 0.0),
+            -m.get(collateral, {}).get("mean_dprob", 0.0),
+            m.get(collateral, {}).get("moved", 0.0),
+        )
+
+
 def suppression_frontier(model, tokenizer, constellation_feats, battery, sizes, device: str = "cpu"):
     """Sweep constellation size: for each n in `sizes`, suppress
     `constellation_feats[:n]` and diff the battery against the unedited
