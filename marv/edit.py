@@ -111,24 +111,63 @@ def steer(model, layer: int, direction, alpha: float = 1.0):
         handle.remove()
 
 
-def constellation(vindex, tokenizer, entity, *, band: str = "knowledge", per_layer: int = 4, embed_scale: float = 1.0):
+def constellation(
+    vindex,
+    tokenizer,
+    entity,
+    *,
+    model=None,
+    prompt: str | None = None,
+    baseline_prompt: str | None = None,
+    band: str = "knowledge",
+    per_layer: int = 4,
+    k_tokens: int = 5,
+    embed_scale: float = 1.0,
+    device: str = "cpu",
+):
     """The ranked set of (layer, feature) that carry `entity`'s associations
     -- the thing you would suppress/ablate to change what the model says
-    about it, and the thing whose overlap with *other* entities is the
-    collateral risk.
+    about it, and whose overlap with *other* entities is the collateral risk.
 
-    Returns Association rows (from marv.probe.describe_entity) already sorted
-    by similarity; the top of the list is where the fact lives most
-    strongly, so slicing `[:n]` gives you a minimal constellation.
+    Default: bare-embedding gate-KNN (fast, no forward pass). On many models
+    this is noisy -- pass `model` (and optionally `prompt`, default a short
+    template about `entity`, plus `baseline_prompt` to difference against) to
+    query the model's *actual* hidden state instead. Much sharper.
+
+    Returns Association rows sorted by similarity; slice `[:n]` for a minimal
+    constellation. For the *causal* version -- rank by measured suppression
+    effect on a target prompt -- see marv.evaluate.rank_by_ablation_effect.
     """
-    from .probe import describe_entity
+    from .probe import Association, describe_feature, describe_entity, top_features
 
-    return describe_entity(
-        vindex,
-        tokenizer,
-        entity,
-        band=band,
-        k_features=per_layer,
-        embed_scale=embed_scale,
-        include_suppressed=True,
+    if model is None:
+        return describe_entity(
+            vindex, tokenizer, entity, band=band, k_features=per_layer,
+            k_tokens=k_tokens, embed_scale=embed_scale, include_suppressed=True,
+        )
+
+    from .context import hidden_states_at_layers
+
+    prompt = prompt or f"Tell me about {entity}."
+    layers = vindex.band(band)
+    hs = hidden_states_at_layers(model, tokenizer, prompt, layers, device=device)
+    base = (
+        hidden_states_at_layers(model, tokenizer, baseline_prompt, layers, device=device)
+        if baseline_prompt
+        else None
     )
+    rows: list[Association] = []
+    for L in layers:
+        q = hs[L] - base[L] if base is not None else hs[L]
+        for f, sim in top_features(vindex, L, q, k=per_layer, include_suppressed=True):
+            tok_ids, _ = describe_feature(vindex, L, f, k=k_tokens)
+            toks = tokenizer.batch_decode([[int(t)] for t in tok_ids])
+            rows.append(
+                Association(
+                    layer=L, feature=f, sim=float(sim),
+                    tokens=[t.strip() for t in toks],
+                    suppressed=(L, f) in vindex.suppressed,
+                )
+            )
+    rows.sort(key=lambda r: -r.sim)
+    return rows

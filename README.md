@@ -100,8 +100,8 @@ See `scripts/demo_smollm2.py` and the notebooks:
 
 | notebook | what |
 |---|---|
-| `notebooks/marv_qwen3_colab.ipynb` | end-to-end on Qwen3-0.6B: extract, browse, edit, ablate, Base-vs-post-trained diff |
-| `notebooks/marv_edit_eval_colab.ipynb` | evaluating an edit: efficacy vs. specificity, the Pareto frontier, `suppress` vs `ablate` vs `steer`, per-layer localization |
+| `notebooks/marv_llama32_1b_colab.ipynb` | end-to-end on Llama-3.2-1B: extract, browse, contextual constellation, edit, base-vs-instruct weight diff |
+| `notebooks/marv_edit_eval_colab.ipynb` | evaluating an edit: causal constellation, efficacy vs. specificity, the Pareto frontier, `suppress` vs `ablate` vs `steer` |
 | `notebooks/marv_smollm2_colab.ipynb` | original SmolLM2 base vs tool-tuned probe |
 
 ## Layout

@@ -18,6 +18,7 @@ from .evaluate import (
     Probe,
     diff_battery,
     run_battery,
+    rank_by_ablation_effect,
     study_edit,
     suppression_frontier,
 )
@@ -63,6 +64,7 @@ __all__ = [
     "diff_battery",
     "study_edit",
     "suppression_frontier",
+    "rank_by_ablation_effect",
     "BatteryResult",
     "BatteryDiff",
     # heatmaps + clustering

@@ -7,7 +7,14 @@ import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from marv.edit import ablate, restore, suppress
-from marv.evaluate import Probe, diff_battery, run_battery, study_edit, suppression_frontier
+from marv.evaluate import (
+    Probe,
+    diff_battery,
+    rank_by_ablation_effect,
+    run_battery,
+    study_edit,
+    suppression_frontier,
+)
 from marv.extract import default_layer_bands, extract
 from marv.probe import build_down_meta, describe_entity, describe_feature, logit_lens, top_features
 
@@ -54,7 +61,11 @@ class FakeTok:
         return [self.decode(s) for s in seqs]
 
     def __call__(self, text, return_tensors=None):
-        return {"input_ids": torch.tensor([self.encode(text)], dtype=torch.long)}
+        class _Enc(dict):
+            def to(self, device):
+                return self
+
+        return _Enc(input_ids=torch.tensor([self.encode(text)], dtype=torch.long))
 
 
 def test_default_layer_bands_cover_all_layers_contiguously():
@@ -178,6 +189,43 @@ def test_metrics_and_frontier():
     sweep = suppression_frontier(model, tok, [(1, 7), (1, 12), (2, 3), (2, 9)], battery, sizes=[0, 2, 4])
     assert [n for n, _ in sweep] == [0, 2, 4]
     assert all(d.metrics()["target"]["moved"] == 0.0 for n, d in sweep if n == 0)
+
+
+def test_target_token_ids_prefers_leading_space_variant():
+    # a real tokenizer would give distinct ids for "Paris" vs " Paris";
+    # here just assert run_battery scores a candidate set, not one bad id,
+    # and that an identical rerun is unchanged.
+    model, tok = tiny_model(), FakeTok()
+    probes = [Probe("the capital of France is", "Paris", ("target",))]
+    r = run_battery(model, tok, probes).rows[0]
+    assert isinstance(r.target_ids, tuple) and len(r.target_ids) >= 1
+    assert r.target_id == r.target_ids[0]
+    r2 = run_battery(model, tok, probes).rows[0]
+    assert r.target_rank == r2.target_rank and r.target_prob == r2.target_prob
+
+
+def test_rank_by_ablation_effect_orders_by_measured_drop():
+    model, tok = tiny_model(), FakeTok()
+    probes = [Probe("the capital of France is", "Paris", ("target",))]
+    cands = [(1, 7), (1, 12), (2, 3), (2, 9), (0, 1)]
+    ranked = rank_by_ablation_effect(model, tok, cands, probes)
+    assert len(ranked) == len(cands)
+    drops = [d for _, d in ranked]
+    assert drops == sorted(drops, reverse=True)
+
+
+def test_contextual_constellation_runs():
+    from marv.edit import constellation
+
+    vindex = extract(tiny_model())
+    build_down_meta(vindex, k=5)
+    model, tok = tiny_model(), FakeTok()
+    rows = constellation(
+        vindex, tok, "France", model=model, prompt="the capital of France is",
+        baseline_prompt="the capital of", per_layer=2,
+    )
+    assert rows
+    assert [r.sim for r in rows] == sorted((r.sim for r in rows), reverse=True)
 
 
 def test_study_edit_returns_report():

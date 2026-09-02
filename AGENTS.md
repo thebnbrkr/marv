@@ -57,7 +57,8 @@ marv/
   probe.py       STATIC weight-space analysis (no forward pass, no attention):
                    top_features   — gate-KNN, respects vindex.suppressed
                    logit_lens     — project a residual direction through (norm +) lm_head
-                   build_down_meta — precompute every feature's promoted tokens once
+                   build_down_meta(device="cuda") — precompute promoted tokens (GPU path
+                                    is ~50x faster on a big vocab)
                    describe_feature / describe / describe_entity
   context.py     CONTEXTUAL probing (real forward pass, through attention):
                    hidden_states_at_layers, describe_prompt (baseline-differenced)
@@ -68,8 +69,13 @@ marv/
                    ablate(model, feats)    — zero down_proj[:, f] in place, permanent
                    restore(model, saved)   — undo ablate
                    steer(model, L, v, a)   — add a*v to the residual after layer L
-                   constellation(vindex, tok, entity) — the ranked (layer, feature) set carrying a fact
-  evaluate.py    Probe, run_battery, diff_battery, study_edit, suppression_frontier,
+                   constellation(vindex, tok, entity, model=, prompt=) — ranked (layer,
+                                    feature) set carrying a fact; pass model= for a
+                                    contextual (sharp) query instead of the bare embedding
+  evaluate.py    Probe (target_ids: candidate first-token ids, " Paris" vs "Paris"),
+                 run_battery, diff_battery, study_edit, suppression_frontier,
+                 rank_by_ablation_effect (causal constellation — rank candidates by
+                   measured target-prob drop when suppressed alone),
                  BatteryDiff.show(full=) / .metrics() (per-tag efficacy vs collateral)
   toolcall.py    OPTIONAL domain layer — tool-calling prompt scaffolds over context.py.
                  Nothing requires this file; ignore it for non-tool-call work.

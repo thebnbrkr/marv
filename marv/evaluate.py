@@ -21,20 +21,30 @@ import torch
 @dataclass
 class Probe:
     prompt: str
-    target: str  # expected continuation; its first token is the one scored
+    target: str  # expected continuation; scored on its first token
     tags: tuple[str, ...] = ()
+    # explicit candidate first-token ids for the target. If None, derived
+    # from `target` with/without a leading space (see _target_token_ids) --
+    # BPE tokenizers emit a different id for " Paris" (mid-sentence) than
+    # "Paris" (start), and scoring the wrong one makes a known fact look
+    # rank-1000. Set this when the auto-derivation is still wrong.
+    target_ids: tuple[int, ...] | None = None
 
 
 @dataclass
 class ProbeRow:
     prompt: str
     target: str
-    target_id: int
+    target_ids: tuple[int, ...]  # candidate first-token ids for the target
     top1: str
     top1_id: int
-    target_rank: int
-    target_prob: float
+    target_rank: int  # best (lowest) rank across target_ids
+    target_prob: float  # summed probability across target_ids
     tags: tuple[str, ...]
+
+    @property
+    def target_id(self) -> int:  # back-compat: the best single candidate
+        return self.target_ids[0]
 
 
 @dataclass
@@ -45,19 +55,29 @@ class BatteryResult:
         return {r.prompt: r for r in self.rows}
 
 
-def _first_token_id(tokenizer, text: str) -> int:
-    ids = tokenizer.encode(text, add_special_tokens=False)
-    if not ids:
-        ids = tokenizer.encode(" " + text.strip(), add_special_tokens=False)
-    if not ids:
+def _target_token_ids(tokenizer, text: str) -> tuple[int, ...]:
+    """Candidate first-token ids for a target continuation. BPE tokenizers
+    emit a different id for ' Paris' (what the model actually predicts
+    mid-sentence) than 'Paris' (sentence start), and the capitalised vs
+    lower forms differ again -- so gather all plausible first tokens and let
+    run_battery score the best/summed. Deduped, order-preserving."""
+    out: list[int] = []
+    forms = [" " + text, text, " " + text.strip(), text.strip()]
+    forms += [" " + text.strip().lower(), text.strip().capitalize()]
+    for form in forms:
+        ids = tokenizer.encode(form, add_special_tokens=False)
+        if ids and ids[0] not in out:
+            out.append(int(ids[0]))
+    if not out:
         raise ValueError(f"target {text!r} tokenized to nothing")
-    return int(ids[0])
+    return tuple(out)
 
 
 @torch.no_grad()
 def run_battery(model, tokenizer, probes, device: str = "cpu") -> BatteryResult:
-    """Forward each probe once; record the top-1 next token and the target
-    token's rank + probability."""
+    """Forward each probe once; record the top-1 next token, and the target's
+    best rank + summed probability across its candidate first-token ids
+    (see _target_token_ids)."""
     model.eval()
     rows: list[ProbeRow] = []
     for p in probes:
@@ -65,19 +85,23 @@ def run_battery(model, tokenizer, probes, device: str = "cpu") -> BatteryResult:
         enc = {k: v.to(device) for k, v in enc.items()}
         logits = model(**enc).logits[0, -1].float()
         probs = torch.softmax(logits, dim=-1)
-        tid = _first_token_id(tokenizer, p.target)
         order = torch.argsort(logits, descending=True)
-        rank = int((order == tid).nonzero()[0, 0]) + 1
+        rank_of = {int(t): i for i, t in enumerate(order.tolist())}
+
+        tids = tuple(p.target_ids) if p.target_ids else _target_token_ids(tokenizer, p.target)
+        tids = tuple(t for t in tids if t in rank_of) or tids
+        rank = min(rank_of.get(t, len(order) - 1) for t in tids) + 1
+        prob = float(sum(probs[t] for t in tids))
         top1_id = int(order[0])
         rows.append(
             ProbeRow(
                 prompt=p.prompt,
                 target=p.target,
-                target_id=tid,
+                target_ids=tids,
                 top1=tokenizer.decode([top1_id]).strip(),
                 top1_id=top1_id,
                 target_rank=rank,
-                target_prob=float(probs[tid]),
+                target_prob=prob,
                 tags=tuple(p.tags),
             )
         )
@@ -105,13 +129,24 @@ _MARKS = {"flipped": "x", "degraded": "x", "improved": "+", "unchanged": "."}
 _ORDER = {"flipped": 0, "degraded": 1, "improved": 2, "unchanged": 3}
 
 
-def _verdict(b: ProbeRow, a: ProbeRow, eps: float = 0.05) -> str:
-    if b.top1_id != a.top1_id:
+def _verdict(b: ProbeRow, a: ProbeRow, eps: float = 0.05, rel: float = 0.5) -> str:
+    """Target-centric: does the *target token* gain or lose ground. A control
+    where the model was already wrong and its top-1 wanders does not count as
+    an edit effect unless the target's own rank/prob moved.
+
+    - flipped  : target held rank 1 and lost it, or gained rank 1
+    - degraded : target prob fell by >= eps absolute or >= rel fraction
+    - improved : target prob rose by >= eps absolute or >= rel fraction
+    """
+    lost_top1 = b.target_rank == 1 and a.target_rank != 1
+    gained_top1 = b.target_rank != 1 and a.target_rank == 1
+    if lost_top1 or gained_top1:
         return "flipped"
     dp = a.target_prob - b.target_prob
-    if dp < -eps:
+    denom = max(b.target_prob, 1e-9)
+    if dp < -eps or dp / denom < -rel:
         return "degraded"
-    if dp > eps:
+    if dp > eps or dp / denom > rel:
         return "improved"
     return "unchanged"
 
@@ -223,6 +258,29 @@ def study_edit(model, tokenizer, intervention, battery, device: str = "cpu") -> 
     with intervention:
         after = run_battery(model, tokenizer, battery, device)
     return diff_battery(before, after)
+
+
+def rank_by_ablation_effect(model, tokenizer, candidates, probes, device: str = "cpu", restore_between: bool = True):
+    """Rank `candidates` (a list of (layer, feature)) by how much suppressing
+    each ONE, alone, drops the mean target probability across `probes`. The
+    *causal* constellation -- it measures the thing you actually want (effect
+    on the fact) instead of a geometric proxy (gate-KNN similarity).
+
+    One forward pass per candidate per probe, so keep the candidate pool
+    modest (e.g. constellation()[:30]) and `probes` to the target rephrasings.
+    Returns [((layer, feature), mean_prob_drop), ...] sorted by drop desc.
+    """
+    from .edit import suppress
+
+    base = {r.prompt: r.target_prob for r in run_battery(model, tokenizer, probes, device).rows}
+    scored = []
+    for c in candidates:
+        with suppress(model, [tuple(c)]):
+            after = run_battery(model, tokenizer, probes, device).rows
+        drop = sum(base[r.prompt] - r.target_prob for r in after) / len(after)
+        scored.append((tuple(c), drop))
+    scored.sort(key=lambda x: -x[1])
+    return scored
 
 
 def suppression_frontier(model, tokenizer, constellation_feats, battery, sizes, device: str = "cpu"):
