@@ -8,6 +8,7 @@ dependencies = [
     "transformers>=4.40",
     "numpy>=1.24",
     "accelerate>=0.30",
+    "safetensors>=0.4",
 ]
 
 [project.optional-dependencies]
