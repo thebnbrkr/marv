@@ -101,6 +101,7 @@ See `scripts/demo_smollm2.py` and the notebooks:
 | notebook | what |
 |---|---|
 | `notebooks/marv_llama32_1b_colab.ipynb` | end-to-end on Llama-3.2-1B: extract, browse, contextual constellation, edit, base-vs-instruct weight diff |
+| `notebooks/marv_qwen25_05b_colab.ipynb` | Qwen2.5-0.5B: causal constellation edit + Pareto frontier, then two weight diffs off one base (post-training, code training) |
 | `notebooks/marv_edit_eval_colab.ipynb` | evaluating an edit: causal constellation, efficacy vs. specificity, the Pareto frontier, `suppress` vs `ablate` vs `steer` |
 | `notebooks/marv_smollm2_colab.ipynb` | original SmolLM2 base vs tool-tuned probe |
 
