@@ -2,7 +2,7 @@
 behind a "does this model have distinct factual/instruction/coding features,
 or do the same few neurons fire for everything" heatmap.
 
-Built on marv.toolcall.describe_prompt's contextual, baseline-differenced
+Built on marv.context.describe_prompt's contextual, baseline-differenced
 query (see that module's docstring for why a raw embedding or an
 un-differenced hidden state both give weak, undifferentiated signal). This
 module answers a different question than describe_prompt though:
@@ -19,7 +19,7 @@ import numpy as np
 
 from .extract import VindexLite
 from .probe import top_features
-from .toolcall import hidden_states_at_layers
+from .context import hidden_states_at_layers
 
 
 def _differenced_query(model, tokenizer, word: str, layer: int, template: str, baseline_prompt: str, device: str):

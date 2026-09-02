@@ -25,7 +25,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .extract import VindexLite
-from .toolcall import hidden_states_at_layers
+from .context import hidden_states_at_layers
 
 
 @dataclass
@@ -45,7 +45,7 @@ def compute(
     device: str = "cpu",
 ) -> LayerFeatureHeatmap:
     """One row per layer: cosine similarity of that layer's (optionally
-    baseline-differenced -- see marv.toolcall.describe_prompt for why) hidden
+    baseline-differenced -- see marv.context.describe_prompt for why) hidden
     state against every one of that layer's gate rows. Defaults to every
     layer in the model.
     """

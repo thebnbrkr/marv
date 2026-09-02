@@ -1,28 +1,35 @@
-"""Contextual probes: run a real prompt through the live model and read the
-result off the vindex, instead of querying with a bare embedding row.
+"""Optional domain layer: probes aimed at a model's tool-calling behaviour.
 
-`probe.describe()` queries with `vindex.embed[token_id]` directly -- the raw,
-un-contextualized embedding. A layer's gate rows are defined in that layer's
-own transformed basis (after N layers of attention + FFN have reshaped the
-residual), which a bare embedding was never rotated into, so KNN hits against
-it tend to be weak (low cosine similarity, mediocre labels). Running the
-prompt through the model and reading its *actual* hidden state at that layer
-puts the query in the right basis and gives much stronger matches.
+This is a thin wrapper over the generic machinery in marv/context.py and
+marv/probe.py -- nothing here is required to use MARV, and nothing here is
+tool-call-specific except the prompt scaffolding. Point `DEFAULT_TOOL_PROMPTS`
+(or `build_smollm2_tool_prompt`) at whatever behaviour you actually want to
+study -- safety, math, factual recall -- or ignore this file entirely and
+call `marv.context.describe_prompt` directly.
 
-The functions here happen to default to tool-call prompts (DEFAULT_TOOL_PROMPTS)
-but nothing about them is tool-call-specific -- swap in prompts for any other
-behavior (safety, math, factual recall, ...) or any two same-architecture
-checkpoints, tool calling not required.
+The contextual-probe primitives (`hidden_states_at_layers`, `describe_prompt`)
+used to live here; they moved to marv/context.py and are re-exported below
+for back-compat.
 """
 from __future__ import annotations
 
 import json
 
 import numpy as np
-import torch
 
+from .context import describe_prompt, hidden_states_at_layers
 from .extract import VindexLite
-from .probe import describe_feature, logit_lens, top_features
+from .probe import logit_lens, top_features
+
+__all__ = [
+    "DEFAULT_TOOL_PROMPTS",
+    "SMOLLM2_TOOL_SYSTEM_PROMPT",
+    "build_smollm2_tool_prompt",
+    "hidden_states_at_layers",
+    "describe_prompt",
+    "compare_tool_prompt",
+    "firing_features_at_layer",
+]
 
 # Deliberately generic -- point these at whatever tool-call scaffold the
 # model you're testing actually expects (e.g. SmolLM2's <tool_call> tags).
@@ -76,16 +83,6 @@ def build_smollm2_tool_prompt(tokenizer, tools: list[dict], query: str, chat_tem
     return tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
 
 
-def hidden_states_at_layers(model, tokenizer, prompt: str, layers: list[int], device: str = "cpu"):
-    """Last-token residual stream at each requested layer -- a cheap
-    stand-in for a full forward-hook capture system."""
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    with torch.no_grad():
-        out = model(**inputs, output_hidden_states=True)
-    # hidden_states[0] is the embedding output; layer i's output is hidden_states[i+1]
-    return {L: out.hidden_states[L + 1][0, -1, :].float().cpu().numpy() for L in layers}
-
-
 def compare_tool_prompt(
     vindex_base: VindexLite,
     vindex_tuned: VindexLite,
@@ -116,49 +113,3 @@ def firing_features_at_layer(vindex: VindexLite, hidden: np.ndarray, layer: int,
     fine-tuning touched the features actually active at the decision point.
     """
     return top_features(vindex, layer, hidden, k=k)
-
-
-def describe_prompt(
-    vindex: VindexLite,
-    model,
-    tokenizer,
-    prompt: str,
-    layers: list[int],
-    k_features: int = 10,
-    k_tokens: int = 5,
-    device: str = "cpu",
-    baseline_prompt: str | None = None,
-):
-    """Contextual version of `probe.describe()`: the query at each layer is
-    the model's own hidden state after actually processing `prompt`, not a
-    raw embedding row -- the fix for the "France gets 0.11 cosine similarity"
-    problem.
-
-    Pass `baseline_prompt` (the same prompt with the probe word/topic removed,
-    e.g. prompt="I want to talk about France", baseline_prompt="I want to
-    talk about") to subtract that hidden state first. Without it, a single
-    dominant, roughly prompt-invariant direction -- a "massive activation" /
-    outlier channel, a documented phenomenon in small transformers -- can
-    swamp the query regardless of content, since the per-word signal is a
-    small perturbation on top of a much larger shared-template direction.
-    Differencing against the templated baseline cancels that shared part out
-    and isolates what's actually specific to the probe word.
-
-    Returns the same shape as `probe.describe()`:
-    {layer: [(feature_idx, cos_sim, top_token_ids, top_logits), ...]}.
-    """
-    hidden = hidden_states_at_layers(model, tokenizer, prompt, layers, device=device)
-    baseline = (
-        hidden_states_at_layers(model, tokenizer, baseline_prompt, layers, device=device)
-        if baseline_prompt is not None
-        else None
-    )
-    out = {}
-    for layer, vector in hidden.items():
-        query = vector - baseline[layer] if baseline is not None else vector
-        hits = []
-        for feature_idx, sim in top_features(vindex, layer, query, k=k_features):
-            tok_ids, logits = describe_feature(vindex, layer, feature_idx, k=k_tokens)
-            hits.append((feature_idx, sim, tok_ids, logits))
-        out[layer] = hits
-    return out
