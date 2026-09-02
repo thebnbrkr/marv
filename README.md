@@ -96,7 +96,13 @@ for d in marv.most_changed(marv.diff(vb, vt), k=10):
           f"down_cos={d.down_cos_sim:.3f} norm_ratio={d.gate_norm_ratio:.2f}")
 ```
 
-See `scripts/demo_smollm2.py` and `notebooks/marv_smollm2_colab.ipynb`.
+See `scripts/demo_smollm2.py` and the notebooks:
+
+| notebook | what |
+|---|---|
+| `notebooks/marv_qwen3_colab.ipynb` | end-to-end on Qwen3-0.6B: extract, browse, edit, ablate, Base-vs-post-trained diff |
+| `notebooks/marv_edit_eval_colab.ipynb` | evaluating an edit: efficacy vs. specificity, the Pareto frontier, `suppress` vs `ablate` vs `steer`, per-layer localization |
+| `notebooks/marv_smollm2_colab.ipynb` | original SmolLM2 base vs tool-tuned probe |
 
 ## Layout
 

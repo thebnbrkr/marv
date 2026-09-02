@@ -130,6 +130,25 @@ class BatteryDiff:
                 out.setdefault(t, Counter())[r.verdict] += 1
         return out
 
+    def metrics(self) -> dict[str, dict[str, float]]:
+        """Per-tag summary: `moved` fraction (flipped or degraded or improved),
+        `mean_dprob` (signed mean target-prob change), `n`. Read it as the
+        editing literature's efficacy / specificity axes -- high `moved` on
+        your target tag is efficacy, high `moved` on neighbour/control tags
+        is collateral."""
+        groups: dict[str, list[DiffRow]] = {}
+        for r in self.rows:
+            for t in r.tags:
+                groups.setdefault(t, []).append(r)
+        groups["_all"] = list(self.rows)
+        out: dict[str, dict[str, float]] = {}
+        for t, rs in groups.items():
+            n = len(rs)
+            moved = sum(r.verdict != "unchanged" for r in rs)
+            dprob = sum(r.prob_after - r.prob_before for r in rs) / n
+            out[t] = {"n": n, "moved": moved / n, "mean_dprob": dprob}
+        return out
+
     def summary(self) -> str:
         c = Counter(r.verdict for r in self.rows)
         head = (
@@ -204,3 +223,24 @@ def study_edit(model, tokenizer, intervention, battery, device: str = "cpu") -> 
     with intervention:
         after = run_battery(model, tokenizer, battery, device)
     return diff_battery(before, after)
+
+
+def suppression_frontier(model, tokenizer, constellation_feats, battery, sizes, device: str = "cpu"):
+    """Sweep constellation size: for each n in `sizes`, suppress
+    `constellation_feats[:n]` and diff the battery against the unedited
+    baseline. Returns [(n, BatteryDiff), ...].
+
+    Plot `metrics()['<target tag>']['mean_dprob']` (efficacy) against a
+    neighbour/control tag's (collateral) across n to get the edit's Pareto
+    frontier -- the "how hard can I push before I break the neighbours"
+    curve that every knowledge-editing method lives or dies on.
+    """
+    from .edit import suppress
+
+    base = run_battery(model, tokenizer, battery, device)
+    out = []
+    for n in sizes:
+        with suppress(model, list(constellation_feats)[:n]):
+            after = run_battery(model, tokenizer, battery, device)
+        out.append((n, diff_battery(base, after)))
+    return out

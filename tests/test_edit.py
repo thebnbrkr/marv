@@ -7,7 +7,7 @@ import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from marv.edit import ablate, restore, suppress
-from marv.evaluate import Probe, diff_battery, run_battery, study_edit
+from marv.evaluate import Probe, diff_battery, run_battery, study_edit, suppression_frontier
 from marv.extract import default_layer_bands, extract
 from marv.probe import build_down_meta, describe_entity, describe_feature, logit_lens, top_features
 
@@ -160,6 +160,24 @@ def test_run_battery_and_diff_no_edit_is_all_unchanged():
     assert "unchanged" in rep.summary()
     out_full = rep.show(full=True)
     assert "the capital of France is" in out_full
+
+
+def test_metrics_and_frontier():
+    model, tok = tiny_model(), FakeTok()
+    battery = [
+        Probe("the capital of France is", "Paris", ("target",)),
+        Probe("the capital of Italy is", "Rome", ("neighbour",)),
+        Probe("the language of France is", "French", ("control",)),
+    ]
+    r1 = run_battery(model, tok, battery)
+    m = diff_battery(r1, r1).metrics()
+    assert set(m) >= {"target", "neighbour", "control", "_all"}
+    assert m["target"]["n"] == 1
+    assert m["_all"]["moved"] == 0.0
+
+    sweep = suppression_frontier(model, tok, [(1, 7), (1, 12), (2, 3), (2, 9)], battery, sizes=[0, 2, 4])
+    assert [n for n, _ in sweep] == [0, 2, 4]
+    assert all(d.metrics()["target"]["moved"] == 0.0 for n, d in sweep if n == 0)
 
 
 def test_study_edit_returns_report():

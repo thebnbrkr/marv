@@ -19,6 +19,7 @@ from .evaluate import (
     diff_battery,
     run_battery,
     study_edit,
+    suppression_frontier,
 )
 from .heatmap import ActivationMatrix, activation_matrix, polysemantic_features
 from .layer_heatmap import LayerFeatureHeatmap, layer_attribution, top_features_per_layer
@@ -61,6 +62,7 @@ __all__ = [
     "run_battery",
     "diff_battery",
     "study_edit",
+    "suppression_frontier",
     "BatteryResult",
     "BatteryDiff",
     # heatmaps + clustering

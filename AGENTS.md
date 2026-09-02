@@ -69,7 +69,8 @@ marv/
                    restore(model, saved)   — undo ablate
                    steer(model, L, v, a)   — add a*v to the residual after layer L
                    constellation(vindex, tok, entity) — the ranked (layer, feature) set carrying a fact
-  evaluate.py    Probe, run_battery, diff_battery, study_edit, BatteryDiff.show(full=)
+  evaluate.py    Probe, run_battery, diff_battery, study_edit, suppression_frontier,
+                 BatteryDiff.show(full=) / .metrics() (per-tag efficacy vs collateral)
   toolcall.py    OPTIONAL domain layer — tool-calling prompt scaffolds over context.py.
                  Nothing requires this file; ignore it for non-tool-call work.
   heatmap.py / layer_heatmap.py / clustering.py   polysemanticity + activation heatmaps
