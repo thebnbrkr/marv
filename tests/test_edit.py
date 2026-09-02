@@ -222,6 +222,15 @@ def test_suppression_by_layer_splits_constellation_across_layers():
     assert [r.verdict for r in cum[-1][2].rows] == [r.verdict for r in full.rows]
 
 
+def test_empty_battery_raises_clear_error_not_zerodivision():
+    model, tok = tiny_model(), FakeTok()
+    with pytest.raises(ValueError, match="empty probe list"):
+        run_battery(model, tok, [])
+    # the filtered-to-nothing case that used to blow up deep in rank_by_ablation_effect
+    with pytest.raises(ValueError, match="empty probe list"):
+        rank_by_ablation_effect(model, tok, [(1, 7)], [])
+
+
 def test_target_token_ids_prefers_leading_space_variant():
     # a real tokenizer would give distinct ids for "Paris" vs " Paris";
     # here just assert run_battery scores a candidate set, not one bad id,

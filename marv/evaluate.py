@@ -73,11 +73,29 @@ def _target_token_ids(tokenizer, text: str) -> tuple[int, ...]:
     return tuple(out)
 
 
+def _require_probes(probes, what: str):
+    """A battery filtered down to nothing (every fact dropped by the
+    rank<=k 'does the model know this' gate) otherwise surfaces much later as
+    a ZeroDivisionError deep in metrics()/rank_by_ablation_effect. Fail here
+    with the actual cause."""
+    probes = list(probes)
+    if not probes:
+        raise ValueError(
+            f"{what} received an empty probe list. Most likely the baseline "
+            "filter dropped every probe -- the model doesn't predict any of "
+            "these targets at the rank you required. Check run_battery() "
+            "output directly, lower the rank cutoff, or pick a fact the model "
+            "actually knows."
+        )
+    return probes
+
+
 @torch.no_grad()
 def run_battery(model, tokenizer, probes, device: str = "cpu") -> BatteryResult:
     """Forward each probe once; record the top-1 next token, and the target's
     best rank + summed probability across its candidate first-token ids
     (see _target_token_ids)."""
+    probes = _require_probes(probes, "run_battery")
     model.eval()
     rows: list[ProbeRow] = []
     for p in probes:
