@@ -21,6 +21,7 @@ measured per unit).
 | file | what |
 |---|---|
 | `titans_memdiff.py` | standalone prototype. `python experiments/titans_memdiff.py [--train]`. Needs `pip install titans-pytorch`. Runs on CPU or a Colab T4 (training is seconds either way). |
+| `../notebooks/marv_titans_memdiff_colab.ipynb` | Colab version — explains how Titans works, trains a memory on recall, then diffs untrained vs trained with plots (collision histogram, write-concentration curve, forgetting curve). Imports the helpers from this file. |
 
 ## Prototype findings (2026-09-08, `dim 64 → 256 → 64`, 96-token random doc)
 
