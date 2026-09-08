@@ -16,29 +16,25 @@ diff per hidden unit. Then ask which chunk's content each changed unit absorbed,
 whether chunks collide on the same unit, and how much of an early write survives
 to the end (the forget gate, measured per unit).
 
-Prototype findings (2026-09-08, untrained NeuralMemory, dim 64 -> 256 -> 64,
-96-token random document)
--------------------------------------------------------------------------------
-* the diff runs: all 256 hidden units move; gate_cos median ~+0.34, norm_ratio
-  mean ~1.7.
-* storage is DENSE and COLLIDING: every chunk's write spreads across all 256
-  units (top-16 hold ~11% of the write), and ~199/256 units carry content from
-  more than one chunk. Essentially no dedicated per-fact storage -- total
-  superposition. Consistent with the literature's "Titans memorises facts
-  (loss -> 0) but free-form retrieval is only 0-40%" (arXiv:2510.09551).
-* per-unit forgetting is visible: a unit's down-vector norm rises when its
-  chunk is stored, decays under the weight-decay gate, then re-grows.
+Prototype findings (2026-09-08, dim 64 -> 256 -> 64, 96-token random document).
+See experiments/README.md for the full write-up + the sanity-check results.
 
-Training changes the picture (--train, autoassoc recall to MSE ~0.03):
-* write collisions collapse ~199/256 -> ~4/256 -- training does buy content
-  separation between chunks.
-* forgetting gets much stronger: norm_ratio (end/early) ~1.7 -> ~0.10, and the
-  20 hardest-written early units are ALL substantially overwritten by the end
-  (one unit's down-norm decays 0.92 -> 0.08 across 6 chunks). The trained
-  memory's poor free-form recall looks driven by aggressive weight-decay of old
-  writes, not only by superposition.
-* open: with norm_ratio ~0.1 the end-of-doc writes are tiny; the trained-memory
-  analysis should measure each unit's write at its PEAK chunk, not at the end.
+SOLID (metric-independent, stable across seeds):
+* untrained memory does NOT forget -- writes accumulate, norm_ratio end/early
+  ~1.6-2.0.
+* trained memory (--train, recall MSE ~0.03) forgets EXPONENTIALLY -- first-chunk
+  write down to ~4% of peak after 6 chunks, step ratio ~0.5, half-life ~1 chunk.
+  Decay rate is task-dependent (crude recall task may teach a strong gate).
+* the write is DIFFUSE in both -- Gini of one chunk's write over the 256 units
+  is 0.04-0.12 (near-uniform). No sparse per-chunk unit allocation.
+* so the trained memory's apparent lack of write collisions is FORGETTING, not
+  clean storage: by end-of-document it holds almost nothing.
+
+PROXY-DEPENDENT (rough -- the "which chunk did unit u store" step aligns a unit's
+weight-delta against the chunk-MEAN value = mean of 16 random vectors, which is
+near-degenerate). The collision counts printed by section 2 are indicative only;
+whether a trained memory localises storage at write time is UNANSWERED -- needs
+the ablation setup in README roadmap 1.
 
 Literature position (5 web searches + 2 papers, 2026-09-08)
 ----------------------------------------------------------

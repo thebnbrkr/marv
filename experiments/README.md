@@ -12,9 +12,8 @@ that changes while the model reads — and `titans-pytorch` exposes the
 accumulated weight-delta at every chunk boundary in `state.updates`, i.e. a
 stack of snapshots of the same evolving MLP. So MARV's diff applies directly:
 **snapshot the memory early in a document, snapshot it at the end, diff per
-hidden unit.** Then ask what each changed unit stored, whether chunks collide on
-the same unit, and how much of an early write survives (the forget gate,
-measured per unit).
+hidden unit.** Then ask how much of an early write survives (the forget gate,
+measured per unit) and — the open part — what each changed unit actually stored.
 
 ## What's here
 
@@ -25,26 +24,39 @@ measured per unit).
 
 ## Prototype findings (2026-09-08, `dim 64 → 256 → 64`, 96-token random doc)
 
+### Solid — metric-independent, stable across 3+ document seeds
+
 | | untrained memory | trained on recall (MSE ≈ 0.03) |
 |---|---|---|
-| hidden units that move | 256 / 256 | 256 / 256 |
-| `gate_cos` median | +0.34 | +0.60 |
-| `norm_ratio` (end / early) | ~1.7 (writes grow) | ~0.10 (writes decay hard) |
-| write collisions (units carrying >1 chunk's content) | **199 / 256** | **4 / 256** |
-| early-written units overwritten by the end | — | **20 / 20** |
-| one unit's down-norm trajectory | rise / decay / rise | 0.92 → 0.51 → 0.26 → 0.17 → 0.12 → 0.09 → 0.08 |
+| `norm_ratio` (end / early write) | **1.6 – 2.0** — writes accumulate | **0.05 – 0.06** — writes decay hard |
+| first-chunk write, norm by chunk | 0.64 → 0.84 (holds / grows) | 0.85 → 0.03 (clean exponential, step ratio ≈ 0.5) |
+| Gini of a single chunk's write over the 256 units | 0.12 | 0.04 |
 
-Read: an **untrained** memory is total superposition — every chunk smears across
-all units, ~78% of units carry multiple chunks. **Training** buys content
-separation (collisions collapse) but also teaches an aggressive forget gate —
-old writes decay ~10× over six chunks. The literature's "Titans memorises facts
-but free-form retrieval is only 0–40%" (arXiv:2510.09551) looks driven by
-*aggressive weight-decay of old writes*, not superposition alone.
+1. **An untrained memory does not forget** — the forget gate is effectively off,
+   writes pile on top of each other.
+2. **A trained memory forgets exponentially** — first-chunk write down to ~4% of
+   peak after six chunks, half-life ≈ 1 chunk. Tight curve, stable across seeds.
+   (Decay *rate* is task-dependent — `--train` uses a crude short-sequence
+   recall task and may have taught an unusually strong gate.)
+3. **The write is diffuse in both** — Gini 0.04 – 0.12 ≈ near-uniform across all
+   256 units. No sparse "this chunk → these few units" allocation, trained or not.
+4. So the trained memory's apparent lack of write collisions is **forgetting,
+   not clean storage**: by end-of-document it holds almost nothing (184 – 226 of
+   256 units carry no identifiable content), so there is nothing left to collide.
 
-**Big caveats:** toy scale (one memory, dim 64), no real vocabulary, `--train`
-uses a crude autoassociative-recall task, and with `norm_ratio ≈ 0.1` the
-trained-memory diff should be re-run measuring each unit's write at its *peak*
-chunk rather than at the end.
+### Proxy-dependent — treat as rough
+
+The "which chunk's content did this unit store" analysis aligns a unit's
+weight-delta against the *chunk-mean value vector* — the mean of 16 random unit
+vectors, which is near-degenerate (points almost nowhere). So the specific
+collision counts (`~193` untrained, `~1` trained) are shaky, and the trained
+memory's peak-write content-alignment came out at ≈ 0 (indistinguishable from
+the bad target). **Whether a trained memory localises storage at the moment of
+writing is unanswered** — see roadmap 1.
+
+The literature's "Titans memorises facts but free-form retrieval is only 0–40%"
+(arXiv:2510.09551) is consistent with the forgetting result, but proving the
+mechanism needs the ablation setup below.
 
 ## Literature position
 
@@ -59,23 +71,33 @@ feature-level weight-diff of a test-time memory across a document. Closest:
 - **Disentangling MLP Neuron Weights in Vocabulary Space** (arXiv:2604.06005) —
   logit-lens on MLP neurons, but *static* transformers.
 
-Titans is ~20 months old. Treat "novel" as the **mechanism-level finding**
-(dense collision when untrained; decay-driven forgetting when trained), not the
-tool. Caveat: search was not exhaustive; a workshop paper could exist.
+Titans is ~20 months old. Treat "novel" as the **mechanism-level finding** — a
+clean per-unit measurement of the weight-decay gate, with a trained/untrained
+phase difference — not the tool. Caveat: search was not exhaustive; a workshop
+paper could exist.
 
 ## Roadmap
 
-1. **Trained vs untrained, properly.** Re-run the collision analysis measuring
-   each unit's write at its peak chunk. Does training localise storage, or just
-   forget faster?
+1. **Answer the storage question with ablation, not a proxy.** Store N *tracked*
+   key→value pairs; check recall per pair (`M(k_i)` vs `v_i`) as N grows;
+   ablate hidden units one at a time and measure which units' removal kills a
+   given pair's recall (`marv.suppress` / `rank_by_ablation_effect` on the live
+   memory). Overlap between pairs' unit-sets is the *real* collision measurement.
+   Blocker found 2026-09-08: `titans-pytorch` retrieves per chunk with per-chunk
+   causal weights + head splitting; a naive `functional_call` on one final
+   weight state only reproduces the true retrieval at cos ≈ 0.6, so the ablation
+   has to go through the library's own retrieve path (inject modified weights
+   into the state) or a faithful re-implementation.
 2. **Scale.** `dim 512`, 2–4 memory layers, 500–2000 token documents. Does the
-   collision rate hold? Does a forgetting *curve* (survival vs distance) emerge?
+   forgetting curve stay exponential? Does a survival-vs-distance curve and a
+   capacity knee appear?
 3. **Real vocabulary.** Wire the memory into a small LM (titans-pytorch MAC on
    char/byte enwik8 fits a T4) so a `describe_feature`-style logit lens reads
-   what a unit promotes: "unit 33 now writes `Colchester`."
+   what a unit promotes: "unit 33 now writes `Colchester`." Also fixes the
+   degenerate content target from finding-set 2.
 4. **Package it.** If the analysis stabilises: a `marv` adapter for a plain-MLP
    memory + `marv.diff`-compatible snapshots, and a Colab notebook.
 5. **The paper shape.** "Instrumenting test-time memory with feature-level
-   diffs" — workshop-scale if the trained-memory numbers show clean structure
-   (a forgetting curve, a capacity knee, a localisation-vs-superposition
-   phase change with scale).
+   diffs" — workshop-scale if the numbers show clean structure (the forgetting
+   curve already does; a capacity knee and a real localisation measurement
+   would carry it).
