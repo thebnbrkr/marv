@@ -21,8 +21,9 @@ measured per unit) and — the open part — what each changed unit actually sto
 |---|---|
 | `titans_memdiff.py` | standalone prototype. `python experiments/titans_memdiff.py [--train]`. Needs `pip install titans-pytorch`. Runs on CPU or a Colab T4 (training is seconds either way). |
 | `../notebooks/marv_titans_memdiff_colab.ipynb` | Colab version — explains how Titans works, trains a memory on recall, then diffs untrained vs trained with plots (collision histogram, write-concentration curve, forgetting curve). Imports the helpers from this file. |
-| `titans_ablation.py` | causal follow-up to the proxy-dependent part above. `python experiments/titans_ablation.py [--train]`. Stores tracked key/value pairs and ablates one hidden unit at a time to see which pair's recall breaks — real intervention, not a correlational guess. |
-| `../notebooks/marv_titans_ablation_colab.ipynb` | Colab version of the ablation test, with a replay-fidelity sanity check, baseline-recall plot, and a per-(unit, pair) drop heatmap. |
+| `titans_ablation.py` | causal follow-up to the proxy-dependent part above. `python experiments/titans_ablation.py [--train / --seed-stability]`. Stores tracked key/value pairs and ablates one hidden unit at a time to see which pair's recall breaks — real intervention, not a correlational guess. Also reports per-pair fragility (z-scored, collapsed across units) and a unit-importance concentration curve, and can run a multi-seed stability check on either. |
+| `../notebooks/marv_titans_ablation_colab.ipynb` | Colab version of the ablation test, with a replay-fidelity sanity check, baseline-recall plot, a per-(unit, pair) drop heatmap, and the collapsed per-pair/per-unit views. |
+| `titans_per_unit.py` | `python experiments/titans_per_unit.py`. Answers *why* no unit localizes anything in the real architecture, by testing what happens if the forget gate is allowed to vary per hidden unit instead of being one shared number. No training needed — decay rates are assigned directly, isolating that one variable. |
 
 ## Prototype findings (2026-09-08, `dim 64 → 256 → 64`, 96-token random doc)
 
@@ -92,27 +93,81 @@ paper could exist.
    With a faithful ablation in hand: **no single hidden unit localizes any
    one tracked pair**, trained or not — the largest single-unit effect on any
    pair's recall was ≈0.13 (cosine scale), and no unit's effect concentrates
-   on one pair. Storage is genuinely **distributed / holographic**, causally
-   confirmed, not the earlier proxy's guess. Trained-memory recall is also
-   strongly recency-biased (last-stored pairs recall far better than early
-   ones) — an independent, direct-recall confirmation of the forgetting curve
-   from `titans_memdiff.py`.
-   **New open question:** does a *group* ablation (top-k units most
-   implicated in one pair, removed together) break that pair, even though no
-   single one of them does? That would distinguish "small coalition" from
-   "truly uniform."
+   on one pair. Trained-memory recall is strongly recency-biased (last-stored
+   pairs recall far better than early ones) — an independent, direct-recall
+   confirmation of the forgetting curve from `titans_memdiff.py`.
+   A follow-up heatmap suggested a "fragile middle pair" (store-position 7–8)
+   — a `--seed-stability` check across 5 seeds showed the top-fragile
+   *position* moves every time (8, 7, 3, 8, 9 across seeds); **not a real
+   effect, just noise from one run.** Correctly caught before it became a
+   claim.
+
+1b. **Why no localization — sourced from the real implementation and the
+   paper, 2026-09-11.** Reading `neural_memory.py::store_memories` in full
+   (not just `retrieve_memories`) shows the forget gate (`to_decay_factor`)
+   and write strength (`to_adaptive_step`) are each a **single scalar per
+   head per chunk**, broadcast identically onto all 256 hidden units — the
+   architecture has no mechanism to forget or write one unit differently
+   from another. Checked directly against the paper (arXiv:2501.00663, not
+   just code comments): main-text eq. 13 writes `M_t = (1-α_t)M_{t-1} + S_t`
+   with no per-unit index; Appendix C's more general derivation (eq. 32)
+   writes it as `diag(1-α_t) M_t`, which *would* permit per-dimension decay —
+   the released implementation collapses to the coarser scalar case. No
+   sentence found stating why (a cheap controller + the parallel associative
+   scan in §3.2 both plausibly favor it, but that's inference, not a quote).
+   **Conclusion: "storage doesn't localize" is closer to a structural
+   consequence of this specific gate's coarseness than an emergent discovery
+   about interference.**
+   Also found while checking this: `NeuralMemory`'s default memory model is
+   `ResidualNorm(MemoryMLP(...))` — i.e. `output = LN(MLP(query))*gamma +
+   query`, a residual skip straight from query to output. Zeroing the
+   *entire* MLP for a trained memory left most pairs' recall almost
+   unchanged (`titans_ablation.py`'s `check_residual` test) — meaning for
+   most (non-fresh) pairs, "recall" was mostly the residual floor (~0.5
+   cosine), not memorized content. Only the 1–2 most-recently-written pairs
+   showed a real MLP contribution (0.96 → 0.59 when the MLP was zeroed).
+   The forgetting curve is real, but it's better described as "a real,
+   decaying MLP bonus on top of a constant content-independent floor,"
+   which sharpens rather than undermines the original finding.
+
+1c. **Does per-unit decay change the answer? — YES, confirmed across 8 seeds,
+   2026-09-11.** `titans_per_unit.py` tests the `diag(1-α_t)` case directly:
+   same 2-layer GELU memory MLP, same autoassociative store, but each of the
+   256 units gets its **own fixed** decay rate instead of one shared value
+   (an earlier attempt to *learn* per-unit decay end-to-end did not converge
+   in a reasonable number of steps and was abandoned in favor of this more
+   direct test — noted in the script's docstring). Result, uniform vs.
+   spread decay, same pairs, same seed:
+
+   | | uniform decay (mirrors real arch.) | spread decay (mirrors `diag(1-α_t)`) |
+   |---|---|---|
+   | max single-unit effect on any pair, across 8 seeds | 0.015 – 0.024 (never crosses 0.15) | 0.099 – 0.207 (crosses in 4/8 seeds) |
+   | seeds with a unit breaking exactly 1 pair | 0 / 8 | 4 / 8 |
+
+   A slow-decaying unit reliably ends up as the de facto home for one
+   specific fact once units are allowed to differ; a uniform gate never
+   produces this in any of 8 seeds. **This is the positive result: the
+   earlier "no localization" finding is real for the actual released
+   architecture, but is a consequence of its coarse gate, not an inherent
+   property of test-time memory — give it per-unit forgetting and real
+   localization appears.**
+
 2. **Scale.** `dim 512`, 2–4 memory layers, 500–2000 token documents. Does the
-   forgetting curve stay exponential? Does distributed storage hold, or does
-   a localization regime appear at a different scale? Does a survival-vs-
-   distance curve and a capacity knee appear?
-3. **Real vocabulary.** Wire the memory into a small LM (titans-pytorch MAC on
-   char/byte enwik8 fits a T4) so a `describe_feature`-style logit lens reads
-   what a unit promotes: "unit 33 now writes `Colchester`." Also lets the
-   ablation test use real facts instead of random vectors.
+   forgetting curve stay exponential? Does the per-unit-decay localization
+   result (1c) hold or sharpen at scale? Does a survival-vs-distance curve
+   and a capacity knee appear?
+3. **Real vocabulary — in progress.** Wire the memory into a small LM
+   (`titans_pytorch.MemoryAsContextTransformer`, MAC) trained on real text so
+   a `describe_feature`-style logit lens reads what a unit promotes, and the
+   ablation/localization tests use real facts instead of random vectors. The
+   official `train_mac.py` recipe (dim 384, depth 8, 100k batches, wandb,
+   flex-attn) is a real multi-hour+ training run, not a quick Colab demo —
+   scaling it down for something Colab-appropriate is the plan here. The
+   `data/enwik8.gz` dataset is already available locally (cloned repo,
+   `~/Desktop/titans-pytorch-main/data/`), no download needed.
 4. **Package it.** If the analysis stabilises: a `marv` adapter for a plain-MLP
    memory + `marv.diff`-compatible snapshots, and a Colab notebook.
 5. **The paper shape.** "Instrumenting test-time memory with feature-level
-   diffs" — workshop-scale if the numbers show clean structure. The
-   forgetting curve and the causal distributed-storage result both do now;
-   a capacity knee (item 2) and a real-vocabulary readout (item 3) would
-   carry it further.
+   diffs, and showing its lack of localization is a gate-granularity
+   artifact, not an inherent property" — workshop-scale if item 3 (real
+   vocabulary) and item 2 (scale) hold up the story from toy random vectors.

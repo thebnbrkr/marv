@@ -121,6 +121,66 @@ def run_ablation_sweep(mem, weights, pairs):
     return baseline, drop
 
 
+def per_pair_sensitivity(drop: np.ndarray):
+    """Collapse the (unit, pair) drop matrix across units: for each pair,
+    how much does an average single-unit ablation disturb it, and is that
+    more than the pack (z-score across pairs)? This is the honest read of
+    a "horizontal band" in the raw heatmap -- a pair no single unit owns,
+    but that many units nudge a little. One run's z-score alone doesn't
+    prove a pair is structurally fragile; see `seed_stability_check`."""
+    mag = np.abs(drop)
+    mean = mag.mean(axis=0)
+    std = mag.std(axis=0)
+    z = (mean - mean.mean()) / (mean.std() + 1e-9)
+    return mean, std, z
+
+
+def per_unit_concentration(drop: np.ndarray):
+    """Collapse across pairs: each unit's total |drop|, sorted descending,
+    as a cumulative share of the total. A steep early rise = importance
+    concentrated in a few units; a near-diagonal line = uniformly diffuse
+    (the Gini-style read titans_memdiff.py already uses for writes,
+    applied here to causal importance instead of write magnitude)."""
+    total = np.abs(drop).sum(axis=1)
+    sorted_total = np.sort(total)[::-1]
+    cum_share = np.cumsum(sorted_total) / (sorted_total.sum() + 1e-9)
+    return sorted_total, cum_share
+
+
+def seed_stability_check(train: bool, steps: int, n_pairs: int, seeds=(0, 1, 2, 3, 4)):
+    """Does the SAME store-position keep showing up as the most fragile
+    pair across independent random draws, or does it move around each
+    time (i.e. it was just noise in any single run)? Prints the top
+    fragile pair-position per seed."""
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print("=" * 70)
+    print(f"SEED STABILITY CHECK  --  trained={train}, {len(seeds)} seeds, {n_pairs} pairs")
+    print("=" * 70)
+    top_positions = []
+    for sd in seeds:
+        torch.manual_seed(sd)
+        mem = NeuralMemory(dim=DIM, chunk_size=1).to(device)
+        if train:
+            train_recall(mem, steps=steps, device=device)
+        pairs, weights = store_tracked_pairs(mem, n_pairs, DIM, device, sd)
+        _, drop = run_ablation_sweep(mem, weights, pairs)
+        mean, _, z = per_pair_sensitivity(drop)
+        top = int(np.argmax(z))
+        top_positions.append(top)
+        print(f"  seed {sd}: most-fragile store-position = {top}   (z={z[top]:+.2f})   "
+              f"z per position: {np.round(z, 2)}")
+    from collections import Counter
+    counts = Counter(top_positions)
+    most_common, n = counts.most_common(1)[0]
+    print(f"\nposition {most_common} was the top-fragile pair in {n}/{len(seeds)} seeds.")
+    if n <= len(seeds) // 2:
+        print("-> NOT stable: the 'fragile pair' moves around by seed -- treat single-run")
+        print("   horizontal bands as noise, not a structural middle-zone effect.")
+    else:
+        print("-> STABLE: the same store-position keeps showing up -- worth treating as a")
+        print("   real positional effect, not noise.")
+
+
 def report(trained: bool, baseline: np.ndarray, drop: np.ndarray):
     print("=" * 70)
     print(f"trained={trained}   {HIDDEN} units x {drop.shape[1]} tracked pairs")
@@ -139,6 +199,17 @@ def report(trained: bool, baseline: np.ndarray, drop: np.ndarray):
     for u in np.argsort(-total_effect)[:8]:
         print(f"  unit {u:>4}  total|drop|={total_effect[u]:.3f}  row={np.round(drop[u], 2)}")
 
+    mean, std, z = per_pair_sensitivity(drop)
+    print("\nper-pair fragility (mean |drop| across all 256 units, z-score vs the pack):")
+    for i in range(len(mean)):
+        flag = "  <-- notably fragile" if z[i] > 1.5 else ("  <-- notably robust" if z[i] < -1.5 else "")
+        print(f"  pair {i:>2}  mean={mean[i]:.4f}  std={std[i]:.4f}  z={z[i]:+.2f}{flag}")
+
+    _, cum_share = per_unit_concentration(drop)
+    print(f"\nconcentration: top 10% of units ({HIDDEN // 10}) hold "
+          f"{cum_share[HIDDEN // 10 - 1]:.1%} of total causal importance "
+          f"(10.0% = perfectly uniform)")
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -146,7 +217,15 @@ def main():
     ap.add_argument("--steps", type=int, default=400)
     ap.add_argument("--n-pairs", type=int, default=12)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--seed-stability", action="store_true",
+                     help="run the single-unit sweep across 5 seeds and check whether the "
+                          "same store-position keeps showing up as most fragile, instead of "
+                          "a single run's ablation report")
     args = ap.parse_args()
+
+    if args.seed_stability:
+        seed_stability_check(args.train, args.steps, args.n_pairs)
+        return
 
     torch.manual_seed(args.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
