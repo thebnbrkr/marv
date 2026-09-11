@@ -277,6 +277,100 @@ def describe_memory_units(model: MemoryAsContextTransformer, passage: torch.Tens
         print(f"  unit {u:>4}  ->  {bytes_str}")
 
 
+def compute_memory_jacobian(model: MemoryAsContextTransformer, passages: list[torch.Tensor], device: str,
+                             position: int = -1) -> torch.Tensor:
+    """Simplified version of Anthropic's J-lens (arXiv:2607.15495,
+    "Verbalizable Representations Form a Global Workspace in Language
+    Models"): J_l = E[d(final logits)/d(activation at layer l)], averaged
+    over a corpus -- instead of assuming a naive logit lens's shortcut
+    (project an intermediate vector straight through the FINAL norm, as if
+    nothing downstream could change its meaning), this measures the REAL,
+    exact transport through whatever layers actually come after the memory,
+    via real backprop through the model's own true computation graph.
+
+    Simplifications vs. the paper, stated plainly: uses the SAME position as
+    both source and target (the paper averages over source position t AND
+    later positions t' > t; this only looks at t'=t) and computes an exact
+    per-example Jacobian via 256 backward passes per passage rather than the
+    approximation techniques a Claude-scale model would need -- tractable
+    here specifically because this model is tiny (dim_head=64, 0.4M params).
+
+    Returns G, shape (num_tokens, dim_head): G @ v approximates how
+    injecting direction v into the memory's retrieved output would move
+    each token's logit, properly accounting for the remaining attention/
+    feedforward layers -- unlike titans_logit_lens, which skips them."""
+    mem_layer = next(group[4] for group in model.layers if group[4] is not None)
+    num_tokens = model.to_logits.out_features
+    G_sum = torch.zeros(num_tokens, DIM_HEAD, device=device)
+
+    for passage in passages:
+        captured = {}
+
+        # NOTE: mac_transformer.py calls `mem.forward(...)` directly, not
+        # `mem(...)` -- that bypasses nn.Module.__call__, so a normal
+        # register_forward_hook here silently never fires. Monkey-patching
+        # .forward itself is the only way to intercept it.
+        original_forward = mem_layer.forward
+
+        def patched_forward(*args, **kwargs):
+            result = original_forward(*args, **kwargs)
+            captured["retrieved"] = result[0]
+            return result
+
+        mem_layer.forward = patched_forward
+        model.zero_grad(set_to_none=True)
+        try:
+            logits = model(passage.unsqueeze(0).to(device))
+        finally:
+            mem_layer.forward = original_forward
+
+        retrieved = captured["retrieved"]  # (1, seq, dim_head), requires_grad
+        pos = position if position >= 0 else logits.shape[1] + position
+        target_logits = logits[0, pos, :]
+
+        for tok in range(num_tokens):
+            grad = torch.autograd.grad(target_logits[tok], retrieved, retain_graph=(tok < num_tokens - 1))[0]
+            G_sum[tok] += grad[0, pos].detach()
+
+    return G_sum / len(passages)
+
+
+def describe_units_via_jacobian(model: MemoryAsContextTransformer, G: torch.Tensor, U1_final: np.ndarray,
+                                 units: list[int], k: int = 6, valid_bytes: np.ndarray | None = None):
+    """Same units, same current output directions as describe_memory_units,
+    but decoded through the measured Jacobian transport instead of a naive
+    same-layer projection. Compare the two printouts directly -- agreement
+    would suggest the naive lens was fine here; disagreement would mean the
+    layers after the memory are meaningfully reshaping what a unit's
+    contribution ends up promoting.
+
+    `valid_bytes`: a boolean mask over the 256 byte ids restricting which
+    ones can be reported. Necessary in practice -- gradient-based methods
+    give wildly unstable, oversized gradients for tokens the model has
+    almost no real experience with (verified: byte 0x00 never appears at
+    all in 5M bytes of enwik8, and control bytes like 0xa2-0xa6 appear a
+    few hundred times out of 5 million). Without this filter, every unit's
+    top-k collapses onto the same handful of near-unseen bytes regardless
+    of what the unit actually encodes -- a known general pitfall of
+    gradient-based interpretability, not specific to this implementation."""
+    G_np = G.cpu().numpy()
+    for u in units:
+        v = U1_final[u]
+        scores = G_np @ v
+        if valid_bytes is not None:
+            scores = np.where(valid_bytes, scores, -np.inf)
+        idx = np.argsort(-scores)[:k]
+        bytes_str = " ".join(f"'{_printable_byte(int(b))}'" for b in idx)
+        print(f"  unit {u:>4}  ->  {bytes_str}")
+
+
+def common_byte_mask(data: torch.Tensor, min_count: int = 50) -> np.ndarray:
+    """Which of the 256 byte ids actually occur often enough in real data
+    to trust a gradient-based ranking involving them."""
+    counts = np.bincount(data.numpy(), minlength=256)
+    return counts >= min_count
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="path to enwik8.gz")
@@ -314,6 +408,16 @@ def main():
 
     print("\nlogit lens: what do a few memory units currently promote (end of passage)?")
     describe_memory_units(model, passage, device, units=list(range(8)))
+
+    print("\njacobian-transported lens (arXiv:2607.15495-style): same units, properly")
+    print("transported through the layers AFTER the memory instead of a naive shortcut...")
+    mask = common_byte_mask(data_train)
+    extra_passages = [sample_batch(data_val, 256, 1)[0] for _ in range(4)]
+    G = compute_memory_jacobian(model, [passage] + extra_passages, device)
+    with torch.no_grad():
+        _, cache = model(passage.unsqueeze(0).to(device), return_cache=True)
+        U1_final = cache[2][0].updates["model.weights.1"].detach()[0].cpu().numpy()[-1]
+    describe_units_via_jacobian(model, G, U1_final, units=list(range(8)), valid_bytes=mask)
 
 
 if __name__ == "__main__":
