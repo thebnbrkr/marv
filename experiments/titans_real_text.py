@@ -31,6 +31,23 @@ Needs the enwik8 dataset: point --data at a local `enwik8.gz`
 (e.g. the one bundled with a clone of github.com/lucidrains/titans-pytorch
 at data/enwik8.gz) or pass --data to a different path.
 
+Result (2026-09-11), two independent runs, effect STRENGTHENING with more
+training (rules out "undertrained artifact"):
+
+    local, 1000 steps, CPU, val loss 2.27:  norm_ratio 1.81, direction
+        retained 0.87, magnitude retained min 1.30
+    Colab, 3000 steps, T4, val loss 1.88:   norm_ratio 2.20, direction
+        retained 0.95, magnitude retained min 1.66 (never once shrinks)
+
+Compare to titans_memdiff.py's toy recall-task-trained memory: norm_ratio
+~0.07, magnitude always < 1 (aggressive exponential forgetting). A memory
+trained on real language modeling does NOT develop that forgetting -- it
+behaves like the *untrained* random-vector case (writes accumulate), and
+more real training pushes further in that direction, not less. The earlier
+"trained memory forgets exponentially" finding is real for that specific
+toy task, but is not a general property of trained Titans memories -- see
+experiments/README.md roadmap item 3 for the full writeup.
+
 Run
 ---
     pip install titans-pytorch

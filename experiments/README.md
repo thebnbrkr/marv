@@ -156,15 +156,42 @@ paper could exist.
    forgetting curve stay exponential? Does the per-unit-decay localization
    result (1c) hold or sharpen at scale? Does a survival-vs-distance curve
    and a capacity knee appear?
-3. **Real vocabulary — in progress.** Wire the memory into a small LM
-   (`titans_pytorch.MemoryAsContextTransformer`, MAC) trained on real text so
-   a `describe_feature`-style logit lens reads what a unit promotes, and the
-   ablation/localization tests use real facts instead of random vectors. The
-   official `train_mac.py` recipe (dim 384, depth 8, 100k batches, wandb,
-   flex-attn) is a real multi-hour+ training run, not a quick Colab demo —
-   scaling it down for something Colab-appropriate is the plan here. The
-   `data/enwik8.gz` dataset is already available locally (cloned repo,
-   `~/Desktop/titans-pytorch-main/data/`), no download needed.
+3. **Real vocabulary — the forgetting curve REVERSES on real text, confirmed
+   2026-09-11.** `titans_real_text.py` wires a small `MemoryAsContextTransformer`
+   (dim=64 to match the memory's own `dim_head`, one memory layer, no
+   flex-attn — deliberately scaled way down from the library's own
+   `train_mac.py` recipe of dim 384 / depth 8 / 100k batches / wandb, which
+   is a real multi-hour+ run) and trains it on real enwik8 text, then reuses
+   `titans_memdiff.py`'s early-vs-end snapshot diff on the memory reading a
+   real held-out passage instead of 96 random vectors. `data/enwik8.gz` came
+   from a local clone of `lucidrains/titans-pytorch`, no separate download.
+
+   Two independent runs, same direction, effect **strengthening** with more
+   training (rules out "undertrained artifact"):
+
+   | | random-vector, untrained | random-vector, trained (toy recall task) | real text, 1000 steps (CPU) | real text, 3000 steps (T4, val loss 1.88) |
+   |---|---|---|---|---|
+   | norm_ratio (end/early) | ~1.7 | **~0.07** | 1.81 | **2.20** |
+   | direction retained | ~0.47 | ~0.66 | 0.87 | **0.95** |
+   | magnitude retained (min) | — | always < 1 | 1.30 | **1.66 (never shrinks)** |
+
+   A memory trained on an actual language-modeling objective does **not**
+   develop the aggressive exponential forgetting seen on the toy
+   autoassociative-recall task — it behaves like the *untrained* case
+   (writes accumulate), and more real training pushes this further, not
+   less. This confirms a caveat that was in this README from the first
+   commit: *"decay rate is task-dependent — `train_recall` uses a crude
+   short-sequence recall task and may have taught an unusually strong
+   gate."* The earlier "trained memory forgets exponentially" finding is
+   real for that specific toy task, but is **not** a general property of
+   trained Titans memories — plausible reading: predicting the next byte of
+   real text rewards retaining context (topic, recent characters), while
+   the toy recall task had nothing to gain from keeping anything beyond the
+   immediate query.
+   **Still open:** a `describe_feature`-style logit lens reading what a unit
+   promotes, and re-running `titans_per_unit.py`'s per-unit-decay
+   localization test on a real-text-trained memory instead of random
+   vectors.
 4. **Package it.** If the analysis stabilises: a `marv` adapter for a plain-MLP
    memory + `marv.diff`-compatible snapshots, and a Colab notebook.
 5. **The paper shape.** "Instrumenting test-time memory with feature-level
