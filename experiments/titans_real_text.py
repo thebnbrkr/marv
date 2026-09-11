@@ -236,6 +236,47 @@ def report_write_alignment(label: str, cos_values: np.ndarray):
           f"median {np.median(cos_values):+.3f}  (n={len(cos_values)} chunk-pairs)")
 
 
+def titans_logit_lens(model: MemoryAsContextTransformer, direction: np.ndarray, k: int = 8):
+    """Direct port of marv.probe.logit_lens for a live Titans memory unit
+    instead of a static FFN column: normalize through the model's OWN
+    final-norm gain (not plain RMS scaling -- see marv/probe.py's docstring
+    on why that gain matters), then project through the vocabulary head.
+    Returns (byte_ids, their_logits) for the top k bytes this direction
+    currently pushes toward."""
+    eps = 1e-6
+    v = direction / np.sqrt((direction ** 2).mean() + eps)
+    gain = model.norm.weight.detach().cpu().numpy()
+    v = v * gain
+    lm_head = model.to_logits.weight.detach().cpu().numpy()  # (num_tokens, dim)
+    logits = lm_head @ v
+    idx = np.argsort(-logits)[:k]
+    return idx, logits[idx]
+
+
+def _printable_byte(b: int) -> str:
+    return repr(chr(b))[1:-1] if 32 <= b < 127 else f"\\x{b:02x}"
+
+
+@torch.no_grad()
+def describe_memory_units(model: MemoryAsContextTransformer, passage: torch.Tensor, device: str,
+                           units: list[int] | None = None, k: int = 6):
+    """describe_feature()-style readout for a live memory: for each unit,
+    what does its CURRENT output direction (at the end of the passage)
+    promote in byte-space? A direct readout, not an inference from an
+    experiment -- the thing roadmap item 3 flagged as still open."""
+    _, cache = model(passage.unsqueeze(0).to(device), return_cache=True)
+    _, _, neural_mem_caches = cache
+    state = neural_mem_caches[0]
+    U1 = state.updates["model.weights.1"].detach()[0].cpu().numpy()  # (chunks, hidden, dim_head)
+    final = U1[-1]  # (hidden, dim_head) -- the memory's current state, end of passage
+
+    units = units if units is not None else list(range(final.shape[0]))
+    for u in units:
+        idx, logits = titans_logit_lens(model, final[u], k=k)
+        bytes_str = " ".join(f"'{_printable_byte(b)}'" for b in idx)
+        print(f"  unit {u:>4}  ->  {bytes_str}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="path to enwik8.gz")
@@ -265,6 +306,14 @@ def main():
 
     print("\nchecking WHY it forgets less: is the gate input-sensitive, or a fixed habit?")
     inspect_decay_gate(model, passage, device)
+
+    print("\nchecking whether real text's writes reinforce each other more than random bytes' do...")
+    random_passage = torch.randint(0, 256, passage.shape, device=device)
+    report_write_alignment("real text", consecutive_write_alignment(model, passage, device))
+    report_write_alignment("random bytes", consecutive_write_alignment(model, random_passage, device))
+
+    print("\nlogit lens: what do a few memory units currently promote (end of passage)?")
+    describe_memory_units(model, passage, device, units=list(range(8)))
 
 
 if __name__ == "__main__":
