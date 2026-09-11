@@ -21,6 +21,8 @@ measured per unit) and — the open part — what each changed unit actually sto
 |---|---|
 | `titans_memdiff.py` | standalone prototype. `python experiments/titans_memdiff.py [--train]`. Needs `pip install titans-pytorch`. Runs on CPU or a Colab T4 (training is seconds either way). |
 | `../notebooks/marv_titans_memdiff_colab.ipynb` | Colab version — explains how Titans works, trains a memory on recall, then diffs untrained vs trained with plots (collision histogram, write-concentration curve, forgetting curve). Imports the helpers from this file. |
+| `titans_ablation.py` | causal follow-up to the proxy-dependent part above. `python experiments/titans_ablation.py [--train]`. Stores tracked key/value pairs and ablates one hidden unit at a time to see which pair's recall breaks — real intervention, not a correlational guess. |
+| `../notebooks/marv_titans_ablation_colab.ipynb` | Colab version of the ablation test, with a replay-fidelity sanity check, baseline-recall plot, and a per-(unit, pair) drop heatmap. |
 
 ## Prototype findings (2026-09-08, `dim 64 → 256 → 64`, 96-token random doc)
 
@@ -78,26 +80,39 @@ paper could exist.
 
 ## Roadmap
 
-1. **Answer the storage question with ablation, not a proxy.** Store N *tracked*
-   key→value pairs; check recall per pair (`M(k_i)` vs `v_i`) as N grows;
-   ablate hidden units one at a time and measure which units' removal kills a
-   given pair's recall (`marv.suppress` / `rank_by_ablation_effect` on the live
-   memory). Overlap between pairs' unit-sets is the *real* collision measurement.
-   Blocker found 2026-09-08: `titans-pytorch` retrieves per chunk with per-chunk
-   causal weights + head splitting; a naive `functional_call` on one final
-   weight state only reproduces the true retrieval at cos ≈ 0.6, so the ablation
-   has to go through the library's own retrieve path (inject modified weights
-   into the state) or a faithful re-implementation.
+1. **Answer the storage question with ablation, not a proxy. — ANSWERED, 2026-09-11.**
+   `titans_ablation.py`: store N *tracked* key→value pairs, ablate hidden units
+   one at a time, measure which pair's recall breaks. The 2026-09-08 blocker
+   (naive `functional_call` on one final weight state only matched true
+   retrieval at cos ≈ 0.6) turned out to be a fidelity bug, not a structural
+   one: calling the library's own public `NeuralMemory.retrieve_memories()`
+   (which wraps `functional_call` with a pre-norm, multi-head split, q-norm,
+   multihead RMSNorm, retrieve gate, and head merge that the naive version
+   skipped) reproduces the model's true output at cos ≈ 1.0.
+   With a faithful ablation in hand: **no single hidden unit localizes any
+   one tracked pair**, trained or not — the largest single-unit effect on any
+   pair's recall was ≈0.13 (cosine scale), and no unit's effect concentrates
+   on one pair. Storage is genuinely **distributed / holographic**, causally
+   confirmed, not the earlier proxy's guess. Trained-memory recall is also
+   strongly recency-biased (last-stored pairs recall far better than early
+   ones) — an independent, direct-recall confirmation of the forgetting curve
+   from `titans_memdiff.py`.
+   **New open question:** does a *group* ablation (top-k units most
+   implicated in one pair, removed together) break that pair, even though no
+   single one of them does? That would distinguish "small coalition" from
+   "truly uniform."
 2. **Scale.** `dim 512`, 2–4 memory layers, 500–2000 token documents. Does the
-   forgetting curve stay exponential? Does a survival-vs-distance curve and a
-   capacity knee appear?
+   forgetting curve stay exponential? Does distributed storage hold, or does
+   a localization regime appear at a different scale? Does a survival-vs-
+   distance curve and a capacity knee appear?
 3. **Real vocabulary.** Wire the memory into a small LM (titans-pytorch MAC on
    char/byte enwik8 fits a T4) so a `describe_feature`-style logit lens reads
-   what a unit promotes: "unit 33 now writes `Colchester`." Also fixes the
-   degenerate content target from finding-set 2.
+   what a unit promotes: "unit 33 now writes `Colchester`." Also lets the
+   ablation test use real facts instead of random vectors.
 4. **Package it.** If the analysis stabilises: a `marv` adapter for a plain-MLP
    memory + `marv.diff`-compatible snapshots, and a Colab notebook.
 5. **The paper shape.** "Instrumenting test-time memory with feature-level
-   diffs" — workshop-scale if the numbers show clean structure (the forgetting
-   curve already does; a capacity knee and a real localisation measurement
-   would carry it).
+   diffs" — workshop-scale if the numbers show clean structure. The
+   forgetting curve and the causal distributed-storage result both do now;
+   a capacity knee (item 2) and a real-vocabulary readout (item 3) would
+   carry it further.
