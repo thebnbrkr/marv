@@ -161,6 +161,51 @@ def diff_memory_on_passage(model: MemoryAsContextTransformer, passage: torch.Ten
     print("(compare to titans_memdiff.py's random-vector numbers: does real text forget faster, slower, or the same?)")
 
 
+@torch.no_grad()
+def inspect_decay_gate(model: MemoryAsContextTransformer, passage: torch.Tensor, device: str):
+    """WHY does a real-text-trained memory forget less -- is the forget gate
+    genuinely reading the input and choosing to retain predictable/real-
+    looking content, or did training just settle on a fixed low-forgetting
+    habit regardless of what it's shown? Hooks the memory layer's own
+    `to_decay_factor` (the thing that produces alpha_t) during a real
+    forward pass on real text, then again on random bytes through the SAME
+    trained weights, and compares the two. If real text produces a
+    noticeably lower gate value than random bytes, that's direct evidence
+    for "the gate reads the input." If they're similar, the low forgetting
+    is a fixed, input-independent habit the training run settled into."""
+    mem_layer = next(group[4] for group in model.layers if group[4] is not None)
+
+    captured = {}
+
+    def hook(_module, _inp, out):
+        captured["decay"] = out.sigmoid().detach()
+
+    handle = mem_layer.to_decay_factor.register_forward_hook(hook)
+
+    model(passage.unsqueeze(0).to(device), return_cache=True)
+    decay_real = captured["decay"]
+
+    random_bytes = torch.randint(0, 256, passage.shape, device=device)
+    model(random_bytes.unsqueeze(0), return_cache=True)
+    decay_random = captured["decay"]
+
+    handle.remove()
+
+    print(f"learned decay gate (alpha_t) on REAL TEXT:    "
+          f"mean={decay_real.mean():.4f}  min={decay_real.min():.4f}  max={decay_real.max():.4f}")
+    print(f"learned decay gate (alpha_t) on RANDOM BYTES: "
+          f"mean={decay_random.mean():.4f}  min={decay_random.min():.4f}  max={decay_random.max():.4f}")
+    gap = decay_random.mean() - decay_real.mean()
+    print(f"\ngap (random - real): {gap:+.4f}")
+    if gap > 0.02:
+        print("-> the gate IS input-sensitive: it forgets less specifically for real text.")
+    elif gap < -0.02:
+        print("-> unexpected: the gate forgets MORE for real text than random bytes.")
+    else:
+        print("-> the gate looks roughly the SAME regardless of input: low forgetting is a")
+        print("   fixed habit from training, not a live per-input decision.")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="path to enwik8.gz")
@@ -187,6 +232,9 @@ def main():
     print("\ndiffing the memory on a real held-out passage...")
     passage = sample_batch(data_val, 512, 1)[0]
     diff_memory_on_passage(model, passage, device)
+
+    print("\nchecking WHY it forgets less: is the gate input-sensitive, or a fixed habit?")
+    inspect_decay_gate(model, passage, device)
 
 
 if __name__ == "__main__":
