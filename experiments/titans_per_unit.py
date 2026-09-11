@@ -36,6 +36,31 @@ Setup, isolating decay as the one changed variable:
     spread:   units are assigned decay rates spread across [0, 1] (mirrors
               what `diag(1-alpha_t)` would allow if it were used)
 
+Editing demo (2026-09-11): the actual MARV move -- find a fact, edit it,
+measure the damage -- applied to a live memory instead of a frozen one.
+`edit_unit_to_target()` solves for a new output row on one unit so a
+tracked pair recalls an arbitrary new target instead of its original value,
+using only that unit's own weights (found via the localization test above).
+The edit itself is always mathematically exact (cos to the new target =
+1.000, since it's solved for directly) -- the real question is collateral:
+does retargeting the "owning" unit disturb the OTHER stored pairs?
+
+Result: yes, substantially, and picking a MORE ablation-specific unit does
+NOT reduce it -- it got worse. Two candidates, same setup:
+
+    unit 4  / pair 0  (ablation-specificity 1.75): largest collateral 0.473
+    unit 14 / pair 4  (ablation-specificity 2.95): largest collateral 0.540
+
+Ablation-specificity measures how small a unit's EXISTING contribution to
+other pairs is (so deleting it barely moves them). Editing-collateral
+measures something different: how much that unit's ACTIVATION fires for
+OTHER pairs' own keys, regardless of how small its old content there was --
+if it fires for many keys, injecting a big new output row disturbs all of
+them, whatever its previous weights used to encode. These are different
+properties of a unit, and one does not predict the other -- a stronger,
+more specific version of "one neuron carries many unrelated facts" than
+either the ablation or the editing result alone would have shown.
+
 Run
 ---
     python experiments/titans_per_unit.py
@@ -133,6 +158,57 @@ def report(label: str, decay_per_unit: torch.Tensor, baseline, drop):
               f"  breaks pairs {list(hp)}  row={np.round(drop[u], 2)}")
 
 
+def edit_unit_to_target(w0: torch.Tensor, w1: torch.Tensor, unit: int, key: torch.Tensor,
+                         target: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """The actual MARV move, not just deletion: solve for a NEW output row
+    on `unit` so that retrieving with `key` produces `target` instead of
+    whatever it currently retrieves -- using only that one unit's own
+    weights, the same neuron the localization test showed owns this fact.
+    Leaves `unit`'s gate column (w0) untouched -- editing changes what a
+    unit says when it fires, not whether it fires."""
+    w0e, w1e = w0.clone(), w1.clone()
+    ablated_w0, ablated_w1 = ablate(w0, w1, unit)
+    with torch.no_grad():
+        r_ablated = mlp(key, ablated_w0, ablated_w1)  # what's retrieved WITHOUT this unit's help
+        activation = F.gelu(key @ w0[:, unit])
+        if abs(activation.item()) < 1e-6:
+            raise ValueError(f"unit {unit} barely activates for this key "
+                              f"(activation={activation.item():.2e}) -- pick a unit that actually fires for it")
+        new_row = (target - r_ablated) / activation
+    w1e[unit, :] = new_row
+    return w0e, w1e
+
+
+def run_editing_demo(pairs: torch.Tensor, decay_per_unit: torch.Tensor, seed: int,
+                      unit: int, edit_pair_idx: int, target: torch.Tensor):
+    """Find it, edit it, measure the damage -- MARV's core loop, on a LIVE
+    memory instead of a frozen one. Store the pairs normally, pick a unit
+    the localization test says owns `edit_pair_idx`, retarget ONLY that
+    unit so the edited pair now recalls `target`, then check the fact
+    changed and everything else didn't."""
+    w0, w1 = store_tracked_pairs(pairs, decay_per_unit, seed)
+    baseline = recall_cosines(w0, w1, pairs)
+
+    key = pairs[edit_pair_idx]
+    ew0, ew1 = edit_unit_to_target(w0, w1, unit, key, target)
+    edited = recall_cosines(ew0, ew1, pairs)
+    edited_to_target = F.cosine_similarity(mlp(key, ew0, ew1), target, dim=0).item()
+
+    print("=" * 70)
+    print(f"EDITING DEMO -- unit {unit}, retargeting pair {edit_pair_idx}")
+    print("=" * 70)
+    print("recall (cos) per pair, before vs. after the edit:")
+    print("  pair   before   after   moved?")
+    for i in range(len(pairs)):
+        moved = "  <-- EDITED" if i == edit_pair_idx else ("  <-- collateral" if abs(edited[i] - baseline[i]) > 0.1 else "")
+        print(f"  {i:>4}   {baseline[i]:>6.3f}  {edited[i]:>6.3f}{moved}")
+    print(f"\nedited pair's recall of its NEW target: {edited_to_target:.3f} (cos to the fact we edited in, want high)")
+
+    others = [i for i in range(len(pairs)) if i != edit_pair_idx]
+    max_collateral = np.abs(np.array(edited)[others] - np.array(baseline)[others]).max()
+    print(f"largest change on any OTHER pair (collateral damage): {max_collateral:.3f}")
+
+
 def main():
     n_pairs = 12
     seed = 0
@@ -148,6 +224,18 @@ def main():
         baseline, drop = run_ablation_sweep(w0, w1, pairs)
         report(label, decay, baseline, drop)
         print()
+
+    print("\n" + "#" * 70)
+    print("# EDITING DEMO -- find it, edit it, measure the damage")
+    print("#" * 70)
+    # unit 4 was flagged above as cleanly owning pair 0 (ablation-specificity 1.75)
+    run_editing_demo(pairs, spread_decay, seed=seed, unit=4, edit_pair_idx=0, target=pairs[5])
+    print()
+    # unit 14/pair 4 on a different seed: nearly 2x more ablation-specific (2.95) --
+    # a stricter selection criterion, tested to see if it reduces collateral (it doesn't)
+    g7 = torch.Generator().manual_seed(7)
+    pairs7 = torch.randn(n_pairs, DIM, generator=g7)
+    run_editing_demo(pairs7, spread_decay, seed=7, unit=14, edit_pair_idx=4, target=pairs7[8])
 
 
 if __name__ == "__main__":

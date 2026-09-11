@@ -152,6 +152,29 @@ paper could exist.
    property of test-time memory — give it per-unit forgetting and real
    localization appears.**
 
+1d. **The editing demo — find it, edit it, measure the damage, 2026-09-11.**
+   `titans_per_unit.py::edit_unit_to_target` does MARV's actual core move on
+   a live memory instead of a frozen one: solve for a new output row on the
+   unit localization says owns a fact, so that fact recalls an arbitrary new
+   target, using only that unit's own weights. The edit is always exact
+   (cos to the new target = 1.000, solved for directly) — the real question
+   is collateral. Two units tested, picked by ablation-specificity (how
+   little deleting them disturbs other pairs):
+
+   | | ablation-specificity | largest collateral after editing |
+   |---|---|---|
+   | unit 4 / pair 0 | 1.75 | 0.473 |
+   | unit 14 / pair 4 | **2.95** (nearly 2×) | **0.540** (worse) |
+
+   A more ablation-specific unit produced *more* collateral, not less.
+   Ablation-specificity measures how small a unit's existing contribution to
+   other pairs is; editing-collateral measures how much that unit's
+   *activation* fires for other pairs' own keys, independent of how small
+   its old content there was — a unit can look "safe" by one measure and be
+   risky by the other. Confirms, causally and on a live memory, the same
+   thing MARV's own docs say about frozen models: "one neuron is shared by
+   many unrelated facts, that is also where collateral damage comes from."
+
 2. **Scale.** `dim 512`, 2–4 memory layers, 500–2000 token documents. Does the
    forgetting curve stay exponential? Does the per-unit-decay localization
    result (1c) hold or sharpen at scale? Does a survival-vs-distance curve
