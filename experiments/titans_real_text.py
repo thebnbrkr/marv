@@ -206,6 +206,36 @@ def inspect_decay_gate(model: MemoryAsContextTransformer, passage: torch.Tensor,
         print("   fixed habit from training, not a live per-input decision.")
 
 
+@torch.no_grad()
+def consecutive_write_alignment(model: MemoryAsContextTransformer, passage: torch.Tensor, device: str):
+    """Is real text's accumulation (Finding 5) coming from correlated,
+    content-driven structure alone (should show up even UNTRAINED, since
+    the raw bytes are correlated regardless of what the network learned),
+    or does something learned during training create it? Measures the
+    cosine similarity between EACH chunk's write direction and the
+    PREVIOUS chunk's write direction -- consistently aligned (near +1)
+    means writes reinforce each other (constructive, explains
+    accumulation); scattered/negative means they partly cancel."""
+    _, cache = model(passage.unsqueeze(0).to(device), return_cache=True)
+    _, _, neural_mem_caches = cache
+    state = neural_mem_caches[0]
+
+    U1 = state.updates["model.weights.1"].detach()[0].cpu().numpy()  # (chunks, hidden, dim_head)
+    incr = np.diff(U1, axis=0)  # (chunks-1, hidden, dim_head) -- each chunk's write
+    incr_flat = incr.reshape(incr.shape[0], -1)  # flatten hidden x dim_head into one write vector per chunk
+
+    norms = np.linalg.norm(incr_flat, axis=1, keepdims=True) + 1e-9
+    unit = incr_flat / norms
+    consecutive_cos = (unit[1:] * unit[:-1]).sum(axis=1)  # cos(write_t, write_{t-1}) for each t
+
+    return consecutive_cos
+
+
+def report_write_alignment(label: str, cos_values: np.ndarray):
+    print(f"{label:<28}  consecutive-write cos: mean {cos_values.mean():+.3f}  "
+          f"median {np.median(cos_values):+.3f}  (n={len(cos_values)} chunk-pairs)")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="path to enwik8.gz")
