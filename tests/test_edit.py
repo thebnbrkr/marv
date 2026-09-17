@@ -305,6 +305,31 @@ def test_extract_streaming_from_safetensors(tmp_path):
     assert v.layer_bands is not None
 
 
+def test_extract_streaming_untied_lm_head(tmp_path):
+    # HF stores an untied unembedding at top level: "lm_head.weight".
+    from safetensors.numpy import save_file
+
+    from marv.extract import extract_streaming
+
+    h, inter, vocab = 8, 16, 32
+    rng = np.random.default_rng(1)
+    head = rng.standard_normal((vocab, h), dtype=np.float32)
+    t = {
+        "model.layers.0.mlp.gate_proj.weight": rng.standard_normal((inter, h), dtype=np.float32),
+        "model.layers.0.mlp.down_proj.weight": rng.standard_normal((h, inter), dtype=np.float32),
+        "model.embed_tokens.weight": rng.standard_normal((vocab, h), dtype=np.float32),
+        "lm_head.weight": head,
+    }
+    save_file(t, str(tmp_path / "model.safetensors"))
+
+    v = extract_streaming(str(tmp_path))
+    assert v.lm_head is not v.embed
+    np.testing.assert_array_equal(v.lm_head, head)
+
+    with pytest.raises(KeyError):
+        extract_streaming(str(tmp_path), lm_head_key="not.a.key")
+
+
 def test_describe_entity_sorted_and_tokenized():
     vindex = extract(tiny_model())
     build_down_meta(vindex, k=6)

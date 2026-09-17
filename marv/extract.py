@@ -192,7 +192,7 @@ def extract_streaming(
     num_layers: int | None = None,
     layer_key: str = "model.layers.{i}.mlp.{proj}_proj.weight",
     embed_key: str = "model.embed_tokens.weight",
-    lm_head_key: str = "model.lm_head.weight",
+    lm_head_key: str | None = None,
     norm_key: str = "model.norm.weight",
     norm_eps: float = 1e-5,
     model_name: str = "",
@@ -202,7 +202,12 @@ def extract_streaming(
 
     Llama-style key names by default (`model.layers.{i}.mlp.gate_proj.weight`
     etc.). Point the `*_key` args elsewhere for a differently-named
-    checkpoint. Needs the `safetensors` package; there is no live model
+    checkpoint. `lm_head_key=None` looks for HF's top-level `lm_head.weight`
+    (then `model.lm_head.weight`); only when neither exists is the unembedding
+    treated as tied to the embedding. An explicit `lm_head_key` that is
+    missing raises instead of silently falling back.
+
+    Needs the `safetensors` package; there is no live model
     afterwards, so `marv.context` contextual probing is unavailable on a
     vindex built this way -- use `extract(model)` for that.
     """
@@ -242,10 +247,14 @@ def extract_streaming(
         down.append(get(layer_key.format(i=i, proj="down")))
 
     embed = get(embed_key)
-    try:
+    # HF saves the unembedding at top level ("lm_head.weight", no "model."
+    # prefix) and omits it entirely when tied. Falling back to embed on a
+    # mis-named key would silently corrupt every logit lens on an untied model.
+    if lm_head_key is not None:
         lm_head = get(lm_head_key)
-    except KeyError:
-        lm_head = embed  # tied
+    else:
+        found = next((k for k in ("lm_head.weight", "model.lm_head.weight") if k in key_to_file), None)
+        lm_head = get(found) if found is not None else embed  # tied
     try:
         final_norm_weight = get(norm_key)
     except KeyError:
