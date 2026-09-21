@@ -30,6 +30,30 @@ from .layer_heatmap import compute as layer_feature_heatmap
 from .layer_heatmap import difference as layer_heatmap_difference
 from .layer_heatmap import layer_trace, peak_activation_trace, plot_comparison
 from .clustering import PromptActivations, cluster_features, prompt_activations, reduce_pca, reduce_tsne
+from .trace import (
+    Decomposition,
+    PatchSweep,
+    Writes,
+    all_components,
+    capture_writes,
+    component,
+    decompose_logit,
+    logit_diff_metric,
+    mean_ablate,
+    mean_writes,
+    patch_sweep,
+    replace_outputs,
+    trace_by_depth,
+)
+from .diagnostics import (
+    Health,
+    dead_features,
+    find_bottlenecks,
+    health,
+    load_bearing,
+    null_model,
+    write_norms,
+)
 from .batteries import (
     WORLD_CAPITALS,
     broad_controls,
@@ -78,6 +102,28 @@ __all__ = [
     "rank_by_ablation_effect",
     "BatteryResult",
     "BatteryDiff",
+    # tracing (direct vs total effects), from marv-hyena
+    "capture_writes",
+    "Writes",
+    "decompose_logit",
+    "Decomposition",
+    "component",
+    "all_components",
+    "replace_outputs",
+    "mean_writes",
+    "mean_ablate",
+    "logit_diff_metric",
+    "patch_sweep",
+    "PatchSweep",
+    "trace_by_depth",
+    # diagnostics: run before trusting an edit or a trace
+    "health",
+    "Health",
+    "load_bearing",
+    "write_norms",
+    "find_bottlenecks",
+    "dead_features",
+    "null_model",
     # heatmaps + clustering
     "ActivationMatrix",
     "activation_matrix",

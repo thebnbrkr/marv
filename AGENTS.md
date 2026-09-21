@@ -81,6 +81,21 @@ marv/
                  rank_by_ablation_effect (causal constellation — rank candidates by
                    measured target-prob drop when suppressed alone),
                  BatteryDiff.show(full=) / .metrics() (per-tag efficacy vs collateral)
+  trace.py       RESIDUAL-STREAM TRACING (activation-space). Llama-style layers add exactly two
+                 writes each: attn (self_attn output) and mlp (mlp output); final = embed + all writes.
+                   capture_writes  — every write at chosen positions; .reconstruction_error() ~0
+                   decompose_logit — DIRECT attribution of a logit difference through the frozen
+                                     final RMSNorm; rows sum exactly to the real value (.check_error)
+                   replace_outputs / mean_writes / mean_ablate — component-level interventions
+                   patch_sweep     — TOTAL effect: swap each component source->target (same length)
+                   trace_by_depth  — patch the whole residual at one position after each layer:
+                                     where information leaves that position
+  diagnostics.py CHECKS TO RUN BEFORE TRUSTING A RESULT (from marv-hyena / Evo 2):
+                   health (next-token acc + logprob on ordinary text; study_edit(health_texts=)),
+                   load_bearing (single components that break the model alone),
+                   write_norms / find_bottlenecks (one write dominating the residual),
+                   dead_features (neurons that never fire: their top examples are noise),
+                   null_model (weights shuffled per tensor: a baseline for artifacts)
   batteries.py   curated probe sets: WORLD_CAPITALS + SCIENCE/LEXICAL/MATH/HISTORY/
                  COMMONSENSE lists, broad_controls() (~110 tagged by sub-domain),
                  capital_edit_battery(country, capital, neighbours). Pure data.
@@ -91,6 +106,7 @@ scripts/demo_smollm2.py       end-to-end base vs tool-tuned
 notebooks/*.ipynb             T4-ready
 tests/test_arch.py            adapter + extract + diff + heatmap (synthetic Llama)
 tests/test_edit.py            edit + evaluate + describe (synthetic Llama)
+tests/test_diagnostics.py     trace + diagnostics, each checked against an exact answer
 ```
 
 ## The two kinds of analysis — keep them straight
@@ -124,6 +140,22 @@ hidden state — slower, stronger matches, needs the model).
   (`vindex.band("knowledge")`), not a single layer.
 - **`extract()` copies tensors with `.copy()`** so a vindex can never
   alias live model weights. Keep this.
+- **Every exact decomposition carries its own check.** `decompose_logit` reports
+  `actual` (read from the real logits) and `check_error`; `Writes` reports
+  `reconstruction_error()`. Never report rows whose check failed, and never remove a
+  check to make something pass. A failing check usually means the architecture isn't
+  really Llama-style (e.g. extra post-norms).
+- **Direct ≠ total.** `decompose_logit` is direct only; `patch_sweep` /
+  `trace_by_depth` / ablations are total. Label which one a number is.
+- **Run a health check with every ablation or edit.** Stubbing something load-bearing
+  breaks the whole model, and a broken model fails every test at once. That looks
+  like a finding and isn't. Use `study_edit(..., health_texts=)` or `health()`.
+- **Check for bottlenecks before trusting direct attribution** (`find_bottlenecks`).
+  If one write dominates the residual, direct attribution names only that layer.
+- **Prefer mean-ablation to zeroing** for whole components (`mean_ablate`). Zeroing
+  pushes the residual off-distribution.
+- **Hooks are always removed**, even on exceptions. Every intervention is a context
+  manager or a try/finally.
 - **Llama-style FFN only, for now.** `mlp.{gate,up,down}_proj` + SiLU.
   Adding Gemma / GPT-2 / MoE means a new `ArchAdapter` subclass and
   storing `activation` / `embed_scale` / `logit_softcap` on the vindex —
@@ -177,13 +209,20 @@ a quantiser damaged.
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q                 # tests/test_arch.py + tests/test_edit.py, synthetic, no network
+python -m pytest -q                 # tests/ (42 tests), synthetic, no network
 python scripts/demo_smollm2.py      # downloads SmolLM2 checkpoints
 ```
 
 Tests build a tiny synthetic `LlamaForCausalLM` — no checkpoint download,
 runs anywhere `transformers` + `torch` are installed. New behaviour that
 can be checked on synthetic weights should get a test there.
+
+## Sibling project
+
+[marv-hyena](https://github.com/thebnbrkr/marv-hyena) applies MARV's approach to Evo 2 (StripedHyena:
+Hyena convolutions + attention, DNA). `trace.py` and `diagnostics.py` are ported from it. The
+Hyena-specific parts (filter reach, exact lag-band splits of convolutions, first-layer enumeration)
+stay there.
 
 ## Not in scope (say so if asked)
 

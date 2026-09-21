@@ -96,6 +96,46 @@ for d in marv.most_changed(marv.diff(vb, vt), k=10):
           f"down_cos={d.down_cos_sim:.3f} norm_ratio={d.gate_norm_ratio:.2f}")
 ```
 
+### Check before you trust: diagnostics and tracing
+
+Ported from [marv-hyena](https://github.com/thebnbrkr/marv-hyena), the MARV fork that studies Evo 2 (a DNA model).
+Every one of these fixed a real mistake there, and none is specific to DNA:
+
+```python
+texts = ["The sun rises in the east.", "Water boils at 100 degrees."]      # ordinary text
+
+# 1. Does the model still work under the edit? (an edit that breaks the model looks very "effective")
+rep = marv.study_edit(model, tok, marv.suppress(model, feats), battery, health_texts=texts)
+rep.show()                        # adds: health 0.61 -> 0.58, or "MODEL BROKEN, results uninterpretable"
+
+# 2. Which single layers break the model on their own? Keep those on in group ablations.
+[r for r in marv.load_bearing(model, tok, texts) if r.broken]
+
+# 3. Does one layer dominate the residual stream? Then direct attribution will only name that layer.
+marv.find_bottlenecks(model, tok, "The capital of France is")
+
+# 4. Which layers pushed the answer up, directly? The rows add up EXACTLY to the real logit difference.
+d = marv.decompose_logit(model, tok, "The capital of France is", " Paris", " Rome")
+d.show(); d.check_error           # ~0, otherwise don't trust the rows
+
+# 5. Total effects (including indirect paths): swap each layer's attention / MLP output between prompts
+m = marv.logit_diff_metric(tok, " Rome", " Paris")
+marv.patch_sweep(model, tok, "The capital of Italy is", "The capital of France is", m).show()
+
+# 6. At which layer does "Italy" hand its information to the answer position?
+pos = tok("The capital of Italy is")["input_ids"].tolist().index(tok(" Italy", add_special_tokens=False)["input_ids"][0])
+marv.trace_by_depth(model, tok, "The capital of Italy is", "The capital of France is", position=pos, metric=m)
+
+# 7. Neurons that never fire (their "top examples" are noise), and a shuffled-weights baseline
+marv.dead_features(model, tok, texts)
+null = marv.null_model(model)     # run the same analysis on it; whatever also shows up there is an artifact
+```
+
+**Direct vs. total.** `decompose_logit` measures what each layer's output pushes *by itself*. `patch_sweep`,
+`trace_by_depth` and `mean_ablate` run real forward passes and include every indirect effect. They answer
+different questions. On Evo 2 the direct answer was "block 30: 100%", which was true and useless, because block
+30's output was ~10⁵× larger than every other layer's.
+
 See `scripts/demo_smollm2.py` and the notebooks:
 
 | notebook | what |
@@ -116,7 +156,9 @@ marv/
   context.py    contextual probing (real forward pass, through attention)
   diff.py       per-feature weight-space delta between two checkpoints
   edit.py       live-model interventions: suppress / ablate / steer / constellation
-  evaluate.py   probe batteries: run_battery / diff_battery / study_edit
+  evaluate.py   probe batteries: run_battery / diff_battery / study_edit (health_texts=)
+  trace.py      direct attribution (decompose_logit, self-checked), patch_sweep, trace_by_depth, mean_ablate
+  diagnostics.py health, load_bearing, write_norms / find_bottlenecks, dead_features, null_model
   toolcall.py   optional tool-calling prompt scaffolds over context.py
   heatmap.py, layer_heatmap.py, clustering.py   polysemanticity + activation heatmaps
 scripts/demo_smollm2.py       end-to-end: 135M base vs 135M function-calling
@@ -132,5 +174,5 @@ RAM; `extract_streaming` + weight-space probing do not.
 ## Tests
 
 ```bash
-python -m pytest -q     # synthetic tiny-Llama, no network
+python -m pytest -q     # 42 tests on a synthetic tiny-Llama, no network
 ```

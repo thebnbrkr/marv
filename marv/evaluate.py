@@ -172,6 +172,10 @@ def _verdict(b: ProbeRow, a: ProbeRow, eps: float = 0.05, rel: float = 0.5) -> s
 @dataclass
 class BatteryDiff:
     rows: list[DiffRow] = field(default_factory=list)
+    # (before, after) marv.diagnostics.Health on ordinary text, when study_edit
+    # was given health_texts. An edit that "works" on its target while health
+    # collapses has broken the model, not edited a fact.
+    health: tuple | None = None
 
     def changed(self) -> list[DiffRow]:
         return [r for r in self.rows if r.verdict != "unchanged"]
@@ -209,6 +213,11 @@ class BatteryDiff:
             f"{c['improved']} improved, {c['unchanged']} unchanged  "
             f"(of {len(self.rows)})"
         )
+        if self.health is not None:
+            hb, ha = self.health
+            flag = "  <-- MODEL BROKEN, results uninterpretable" if ha.broken_vs(hb) else ""
+            head += (f"\n  health (next-token acc on ordinary text): {hb.accuracy:.3f} -> {ha.accuracy:.3f}"
+                     f"  logprob {hb.logprob:.2f} -> {ha.logprob:.2f}{flag}")
         tags = self.by_tag()
         if not tags:
             return head
@@ -265,17 +274,30 @@ def diff_battery(before: BatteryResult, after: BatteryResult) -> BatteryDiff:
     return BatteryDiff(rows)
 
 
-def study_edit(model, tokenizer, intervention, battery, device: str = "cpu") -> BatteryDiff:
+def study_edit(model, tokenizer, intervention, battery, device: str = "cpu",
+               health_texts: list[str] | None = None) -> BatteryDiff:
     """Run `battery` with and without `intervention` (a context manager, e.g.
     `marv.edit.suppress(model, feats)`), return the diff.
 
-        rep = study_edit(model, tok, suppress(model, [(24, 4123)]), battery)
+    health_texts: ordinary text to check the model still works under the
+    intervention (marv.diagnostics.health). Recommended: without it, an edit
+    that breaks the whole model looks like a very effective edit.
+
+        rep = study_edit(model, tok, suppress(model, [(24, 4123)]), battery,
+                         health_texts=["The sun rises in the east.", ...])
         rep.show()
     """
+    from .diagnostics import health
+
     before = run_battery(model, tokenizer, battery, device)
+    h_before = health(model, tokenizer, health_texts, device) if health_texts else None
     with intervention:
         after = run_battery(model, tokenizer, battery, device)
-    return diff_battery(before, after)
+        h_after = health(model, tokenizer, health_texts, device) if health_texts else None
+    rep = diff_battery(before, after)
+    if health_texts:
+        rep.health = (h_before, h_after)
+    return rep
 
 
 def rank_by_ablation_effect(model, tokenizer, candidates, probes, device: str = "cpu", restore_between: bool = True):
