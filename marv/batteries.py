@@ -79,7 +79,7 @@ LEXICAL: list[tuple[str, str]] = [
     ("The opposite of fast is", "slow"),
     ("The opposite of happy is", "sad"),
     ("The opposite of open is", "closed"),
-    ("The opposite of light is", "dark"),
+    ("The opposite of light is", ("dark", "darkness")),
     ("The opposite of up is", "down"),
     ("The opposite of true is", "false"),
     ("The plural of mouse is", "mice"),

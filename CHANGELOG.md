@@ -1,10 +1,36 @@
 # Changelog
 
-Versions are git tags (`v0.3.1`). Depend on a tag, not on `main`:
+Versions are git tags (`v0.3.2`). Depend on a tag, not on `main`:
 
 ```
-marv @ git+https://github.com/thebnbrkr/marv@v0.3.1
+marv @ git+https://github.com/thebnbrkr/marv@v0.3.2
 ```
+
+## 0.3.2 (2026-10-06)
+
+Found by the second real History run (the same fine-tune, with the stored
+top-1 answers): four countries' capitals had become "Pose…" (the new fact
+leaking), but they were wrong before too, so right->wrong could not see it;
+two of three "protected" regressions were the probe's fault ("darkness" is a
+right answer); and blame on a full fine-tune returned 23,040 "culprits".
+
+### Added
+
+- `gate` reports **spreading answers**: wrong answers that now appear for
+  many more items than before (e.g. 'Pose' 0 -> 4). Catches leakage among
+  items that were already wrong.
+- `blame` works coarse to fine: reverting each layer alone (per-layer
+  table), then the most-changed 1% / 5% / 25% of neurons (how concentrated
+  the change is). It searches for individual neurons only if a small set
+  suffices; otherwise it reports **DISTRIBUTED** instead of a huge list.
+- A `Probe` target may list several acceptable answers
+  (`("dark", "darkness")`).
+
+### Changed
+
+- `broad_controls`: "The opposite of light is" accepts "dark" or "darkness".
+  A History test built from it has new items, so give it a new name if an
+  existing database already has the old one.
 
 ## 0.3.1 (2026-10-06)
 

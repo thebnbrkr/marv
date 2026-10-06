@@ -232,3 +232,55 @@ def test_databases_from_0_3_0_gain_the_top1_column(tmp_path):
     old.close()
     h = History(path)
     assert "top1" in [c[1] for c in h.db.execute("PRAGMA table_info(results)")]
+
+
+def test_blame_reports_a_distributed_change_instead_of_thousands_of_culprits(tmp_path, world):
+    # like a full fine-tune: the same total push, spread evenly over all 32
+    # neurons of a layer, so no small set explains it
+    tok, test, make, _ = world
+    base = make(0)
+    x = np.stack([hidden_states_at_layers(base, tok, p.prompt, [PLANT_LAYER])[PLANT_LAYER] for p in test.probes]).mean(0)
+    direction = torch.tensor(x / np.linalg.norm(x), dtype=torch.float32)
+    spread = copy.deepcopy(base)
+    with torch.no_grad():
+        mlp, wu = spread.model.layers[PLANT_LAYER].mlp, spread.lm_head.weight[40]
+        for f in range(32):
+            mlp.gate_proj.weight[f] = 6 * direction
+            mlp.up_proj.weight[f] = 6 * direction
+            mlp.down_proj.weight[:, f] = (3 * 4 / 32) * wu / wu.norm()
+    models = {"base": base, "spread": spread.eval()}
+    h = History(str(tmp_path / "h.sqlite"))
+    r = h.blame(test, "base", "spread", lambda label: models[label], tok)
+    assert r.ceiling > 0.9 and r.distributed and r.culprits == []
+    assert set(r.by_layer) == {PLANT_LAYER} and r.concentration[-1][0] == 0.25
+    assert "DISTRIBUTED" in r.show()
+
+
+def test_blame_coarse_to_fine_still_finds_a_concentrated_change(tmp_path, world):
+    tok, test, make, _ = world
+    h = History(str(tmp_path / "h.sqlite"))
+    r = h.blame(test, "step-0", "step-15", load_from(make), tok)
+    assert not r.distributed and set(r.culprits) <= {(PLANT_LAYER, f) for f in PLANTED}
+    assert r.by_layer[PLANT_LAYER] > 0.9 and r.by_layer[1] < 0.1  # the drift layer explains nothing
+
+
+def test_gate_reports_answers_that_spread_among_already_wrong_items(tmp_path):
+    # leakage the right->wrong count cannot see: items wrong before and after,
+    # but now all giving the new fact's answer
+    qs = [f"capital {i}" for i in range(6)]
+    test = _ScriptedTest("leak", [Probe(q, "x", ("geo",)) for q in qs])
+
+    class Answers(_Scripted):
+        pass
+
+    before = Answers(0, {q: False for q in qs})
+    after = Answers(1, {q: False for q in qs})
+    h = History(str(tmp_path / "h.sqlite"))
+    h.commit(before, None, "before", [test])
+    h.commit(after, None, "after", [test])
+    h.db.execute("UPDATE results SET top1='Pose' WHERE run_id=(SELECT id FROM runs WHERE version_id="
+                 "(SELECT id FROM versions WHERE label='after')) AND item IN ('capital 0','capital 1','capital 2','capital 3')")
+    rep = h.gate("after", "before", ["leak"])
+    assert rep.tests[0].right_to_wrong == 0
+    assert rep.tests[0].spreading_answers == [("Pose", 0, 4)]
+    assert "spreading answer 'Pose'" in rep.show()

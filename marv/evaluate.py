@@ -21,7 +21,7 @@ import torch
 @dataclass
 class Probe:
     prompt: str
-    target: str  # expected continuation; scored on its first token
+    target: str | tuple[str, ...]  # expected continuation, or several acceptable ones; scored on first tokens
     tags: tuple[str, ...] = ()
     # explicit candidate first-token ids for the target. If None, derived
     # from `target` with/without a leading space (see _target_token_ids) --
@@ -55,7 +55,7 @@ class BatteryResult:
         return {r.prompt: r for r in self.rows}
 
 
-def _target_token_ids(tokenizer, text: str) -> tuple[int, ...]:
+def _target_token_ids(tokenizer, text) -> tuple[int, ...]:
     """Candidate first-token ids for a target continuation. BPE tokenizers
     emit a different id for ' Paris' (what the model actually predicts
     mid-sentence) than 'Paris' (sentence start), and the capitalised vs
@@ -70,7 +70,12 @@ def _target_token_ids(tokenizer, text: str) -> tuple[int, ...]:
     other variants (no space, other case) count only as a single whole
     token: " paris" splitting into " par" + "is" would otherwise add " par",
     the start of " part", " park" and " parent", and "euro" would add "e"."""
-    out: list[int] = []
+    if isinstance(text, (tuple, list)):  # several acceptable answers: the union of their candidates
+        out: list[int] = []
+        for t in text:
+            out += [i for i in _target_token_ids(tokenizer, t) if i not in out]
+        return tuple(out)
+    out = []
     core = text.strip()
     forms = [(" " + core, False), (core, True), (" " + core.lower(), True), (core.capitalize(), True)]
     for form, variant in forms:

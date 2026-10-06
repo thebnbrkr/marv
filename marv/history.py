@@ -215,6 +215,9 @@ class TestComparison:
     regressions: list[tuple] = field(default_factory=list)
     by_tag: dict[str, tuple[int, int]] = field(default_factory=dict)  # tag -> (right->wrong, wrong->right)
     protected_regressions: list[str] = field(default_factory=list)
+    # wrong answers that spread: (answer, items giving it before, after); catches a new
+    # fact leaking into items that were already wrong, which right->wrong cannot see
+    spreading_answers: list[tuple[str, int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -246,6 +249,8 @@ class GateReport:
             tags = [f"{tag} {a}/{b}" for tag, (a, b) in sorted(t.by_tag.items()) if a]
             if tags:
                 lines.append("    right->wrong / wrong->right by tag: " + ", ".join(tags))
+            for ans, n0, n1 in t.spreading_answers:
+                lines.append(f"    spreading answer {ans!r}: wrong answer to {n1} item(s), was {n0}")
             for item, sb, sa, tb, ta in t.regressions[:10]:
                 mark = "  [protected]" if item in t.protected_regressions else ""
                 answer = f", answer {tb!r} -> {ta!r}" if tb is not None or ta is not None else ""
@@ -274,14 +279,28 @@ class BlameResult:
     items: list[str]  # the items that went right -> wrong
     suspects: list[tuple[tuple[int, int], float]]  # ((layer, neuron), relative change), most changed first
     ceiling: float  # restored when every changed MLP neuron is reverted
-    culprits: list[tuple[int, int]]  # smallest set found that restores >= threshold
+    culprits: list[tuple[int, int]]  # smallest set found that restores >= threshold (empty if distributed)
     restored: float  # restored by `culprits` alone
     runs: int
     note: str = ""
+    by_layer: dict[int, float] = field(default_factory=dict)  # restored reverting one layer's suspects alone
+    concentration: list[tuple[float, int, float]] = field(default_factory=list)  # (fraction, neurons, restored)
+    distributed: bool = False  # no small set of neurons restores the result
 
     def show(self) -> str:
         lines = [f"blame: {len(self.items)} regressed item(s), {len(self.suspects)} changed MLP neurons (suspects)",
                  f"  revert all suspects: restores {self.ceiling:.0%}  [total effect]"]
+        if self.ceiling > 1.1:
+            lines.append("    (over 100%: the reverted neurons also carried changes the rest of the model offsets)")
+        if self.by_layer:
+            top = sorted(self.by_layer.items(), key=lambda kv: -kv[1])[:8]
+            lines.append("  one layer at a time: " + ", ".join(f"L{l} {r:.0%}" for l, r in top))
+        if self.concentration:
+            lines.append("  most-changed neurons only: " + ", ".join(
+                f"top {fr:.0%} ({n}) {r:.0%}" for fr, n, r in self.concentration))
+        if self.distributed:
+            lines.append("  verdict: DISTRIBUTED. No small set of neurons explains it; the change is spread over "
+                         "many neurons (typical of full fine-tuning). Read the per-layer table instead.")
         if self.culprits:
             names = ", ".join(f"L{l} n{f}" for l, f in self.culprits[:12])
             more = f" (+{len(self.culprits) - 12})" if len(self.culprits) > 12 else ""
@@ -486,6 +505,13 @@ class History:
                 by_tag.setdefault(tag, [0, 0])[0 if i in down else 1] += 1
         protected = [i for i in down if i in protect or protect & set(tags.get(i, ()))]
         diffs = np.array([b[i][1] - a[i][1] for i in common])
+        from collections import Counter
+
+        wrong_before = Counter(a[i][2] for i in common if not a[i][0] and a[i][2] is not None)
+        wrong_after = Counter(b[i][2] for i in common if not b[i][0] and b[i][2] is not None)
+        spreading = sorted(((ans, wrong_before.get(ans, 0), n) for ans, n in wrong_after.items()
+                            if n - wrong_before.get(ans, 0) >= 2 and n >= 2 * max(1, wrong_before.get(ans, 0))),
+                           key=lambda r: r[1] - r[2])[:5]
         p = mcnemar_regression_p(len(down), len(up))
         net = len(down) > len(up) and p < alpha
         return TestComparison(test_name, len(common), len(down), len(up), p,
@@ -495,7 +521,7 @@ class History:
                               regressions=sorted(((i, a[i][1], b[i][1], a[i][2], b[i][2]) for i in down),
                                                  key=lambda r: r[2] - r[1]),
                               by_tag={k: (v[0], v[1]) for k, v in by_tag.items()},
-                              protected_regressions=protected)
+                              protected_regressions=protected, spreading_answers=spreading)
 
     def gate(self, candidate: str, current: str, test_names, alpha: float = 0.05, protect=()) -> GateReport:
         """Same tests, same items, both versions. FAIL if a test shows a
@@ -547,11 +573,14 @@ class History:
 
     # ---- blame
     def blame(self, test: Test, before: str, after: str, load, tokenizer, *, threshold: float = 0.9,
-              device: str = "cpu") -> BlameResult:
+              concentration_fractions=(0.01, 0.05, 0.25), device: str = "cpu") -> BlameResult:
         """Which changed FFN neurons caused the items that went right -> wrong
-        between `before` and `after`? Diff the weights (suspects), then revert:
-        all suspects first (the ceiling), then halve the suspect list while
-        what remains still restores >= `threshold` of the lost score. Both
+        between `before` and `after`? Diff the weights (suspects), then revert,
+        coarse to fine: all suspects (the ceiling); each layer's suspects alone
+        (a per-layer table); the most-changed 1%, 5%, 25% (how concentrated the
+        change is). Only if one of those restores >= `threshold` is it halved
+        down to the smallest set that still does. Otherwise the change is
+        reported as distributed, not as a list of thousands of "culprits". Both
         versions are committed (with `test`) if they are not already."""
         if not before or not after:
             raise ValueError(f"blame needs two version labels, got {before!r} and {after!r}")
@@ -584,7 +613,26 @@ class History:
                     f"reverting every changed FFN neuron restores only {ceiling:.0%}: part of the change is "
                     "outside the FFN neurons (attention, norms, embeddings), or the neurons act with them")
             return BlameResult(items, suspects, ceiling, [], 0.0, runs, note)
-        group, score, note = [n for n, _ in suspects], ceiling, ""
+        ranked = [n for n, _ in suspects]
+        by_layer: dict[int, list[tuple[int, int]]] = {}
+        for n in ranked:
+            by_layer.setdefault(n[0], []).append(n)
+        layer_restored = {layer: restored(ns) for layer, ns in sorted(by_layer.items())}
+        concentration, start = [], None
+        for frac in concentration_fractions:
+            k = max(1, math.ceil(frac * len(ranked)))
+            if concentration and k == concentration[-1][1]:
+                continue
+            r = restored(ranked[:k])
+            concentration.append((frac, k, r))
+            if r >= threshold:
+                start = (ranked[:k], r)
+                break
+        if start is None:
+            return BlameResult(items, suspects, ceiling, [], 0.0, runs,
+                               f"the {concentration[-1][1]} most-changed neurons restore only "
+                               f"{concentration[-1][2]:.0%}", layer_restored, concentration, distributed=True)
+        (group, score), note = start, ""
         while len(group) > 1:
             half = len(group) // 2
             first, second = group[:half], group[half:]
@@ -599,7 +647,7 @@ class History:
             note = (f"stopped at {len(group)} neurons: neither half restores {threshold:.0%} on its own "
                     f"({s1:.0%}, {s2:.0%}); they matter jointly")
             break
-        return BlameResult(items, suspects, ceiling, group, score, runs, note)
+        return BlameResult(items, suspects, ceiling, group, score, runs, note, layer_restored, concentration)
 
     # ---- moving the file
     def export_jsonl(self, path: str) -> str:

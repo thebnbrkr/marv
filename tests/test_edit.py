@@ -475,3 +475,14 @@ def test_active_features_selects_by_sign_from_the_start():
     assert [r.feature for r in pos] == [int(f) for f in np.argsort(-a)[:5]]
     assert [r.feature for r in neg] == [int(f) for f in np.argsort(a)[:5]]
     assert all(r.activation > 0 for r in pos) and all(r.activation < 0 for r in neg)
+
+
+def test_a_target_may_list_several_acceptable_answers():
+    from marv.evaluate import _target_token_ids
+
+    tok = FakeTok()
+    both = _target_token_ids(tok, ("Paris", "Rome"))
+    assert set(_target_token_ids(tok, "Paris")) | set(_target_token_ids(tok, "Rome")) == set(both)
+    model = tiny_model()
+    row = run_battery(model, tok, [Probe("the capital of France is", ("Paris", "Rome"))]).rows[0]
+    assert set(row.target_ids) == set(both)
