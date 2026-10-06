@@ -486,3 +486,31 @@ def test_a_target_may_list_several_acceptable_answers():
     model = tiny_model()
     row = run_battery(model, tok, [Probe("the capital of France is", ("Paris", "Rome"))]).rows[0]
     assert set(row.target_ids) == set(both)
+
+
+def test_describe_entity_flags_hits_that_random_tokens_also_reach():
+    from marv.probe import chance_level
+
+    vindex = extract(tiny_model())
+    tok = FakeTok()
+    for L in range(vindex.num_layers):
+        c = chance_level(vindex, L)
+        assert 0.0 < c < 1.0
+        assert chance_level(vindex, L) == c  # deterministic
+    rows = describe_entity(vindex, tok, "France", layers=[1], k_features=4)
+    assert all(r.chance is not None for r in rows)
+    # plant a real match: make "France"'s embedding equal to a gate row
+    vindex.embed[tok.w2i["France"]] = vindex.gate[1][7]
+    top = describe_entity(vindex, tok, "France", layers=[1], k_features=4)[0]
+    assert top.feature == 7 and not top.at_chance and "at chance" not in repr(top)
+
+
+def test_study_edit_reports_answers_the_edit_spreads():
+    from marv.evaluate import BatteryDiff, DiffRow, spreading_answers
+
+    rows = [DiffRow(f"capital {i}", ("geo",), "Name", "located", 0.3, 0.05, 1, 3, "flipped") for i in range(4)]
+    rows += [DiffRow("q", ("x",), "located", "located", 0.1, 0.1, 2, 2, "unchanged")]
+    rep = BatteryDiff(rows)
+    assert rep.spreading_answers() == [("located", 1, 5)]
+    assert "spreading answer 'located'" in rep.summary()
+    assert spreading_answers([(False, "a")], [(False, "a")]) == []  # unchanged answers don't count

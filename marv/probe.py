@@ -50,6 +50,19 @@ def top_features(
     return list(zip(idx.tolist(), sims[idx].tolist()))
 
 
+def chance_level(vindex: VindexLite, layer: int, n: int = 64, q: float = 0.95, seed: int = 0) -> float:
+    """What a meaningless query scores on this layer: the `q` quantile, over
+    `n` random token embeddings, of the best cosine against the layer's gate
+    rows. A hit at or below it cannot be told apart from chance. Empirical
+    rather than the random-vector formula sqrt(2 ln N / d), because real gate
+    rows and embeddings are not isotropic."""
+    rng = np.random.default_rng(seed)
+    ids = rng.choice(vindex.embed.shape[0], size=min(n, vindex.embed.shape[0]), replace=False)
+    best = (_l2_normalize_rows(vindex.embed[ids].astype(np.float32))
+            @ _l2_normalize_rows(vindex.gate[layer]).T).max(axis=1)
+    return float(np.quantile(best, q))
+
+
 def logit_lens(vindex: VindexLite, vector: np.ndarray, k: int = 10, rms_norm: bool = True):
     """Project a residual-space vector through (RMSNorm +) lm_head -- 'what
     does this direction mean in vocab space.' Returns (top_k_token_ids,
@@ -189,10 +202,16 @@ class Association:
     sim: float
     tokens: list[str]
     suppressed: bool = False
+    chance: float | None = None  # what a random token scores on this layer (describe_entity only)
+
+    @property
+    def at_chance(self) -> bool:
+        return self.chance is not None and self.sim <= self.chance
 
     def __repr__(self) -> str:
         s = " (suppressed)" if self.suppressed else ""
-        return f"L{self.layer} f{self.feature} sim={self.sim:.2f} -> {self.tokens}{s}"
+        c = f"  [at chance: random tokens reach {self.chance:.2f}]" if self.at_chance else ""
+        return f"L{self.layer} f{self.feature} sim={self.sim:.2f} -> {self.tokens}{s}{c}"
 
 
 def describe_entity(
@@ -215,6 +234,10 @@ def describe_entity(
     weaker than context.describe_prompt()'s contextual version -- but it
     needs only the vindex + tokenizer. Suppressed features are still listed
     (flagged) so you can see the constellation you carved into.
+
+    Each row carries the layer's `chance` level (chance_level: what random
+    token embeddings score there); rows at or below it are flagged
+    `at_chance`. On many models most bare-embedding hits are.
     """
     ids = tokenizer.encode(entity, add_special_tokens=False)
     if not ids:
@@ -223,6 +246,7 @@ def describe_entity(
     layers = layers if layers is not None else vindex.band(band)
     rows: list[Association] = []
     for layer in layers:
+        chance = chance_level(vindex, layer)
         hits = top_features(vindex, layer, q, k=k_features, include_suppressed=include_suppressed)
         for f, sim in hits:
             tok_ids, _ = describe_feature(vindex, layer, f, k=k_tokens)
@@ -234,6 +258,7 @@ def describe_entity(
                     sim=float(sim),
                     tokens=[t.strip() for t in toks],
                     suppressed=(layer, f) in vindex.suppressed,
+                    chance=chance,
                 )
             )
     rows.sort(key=lambda r: -r.sim)

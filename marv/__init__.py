@@ -4,6 +4,7 @@ from .extract import VindexLite, default_layer_bands, extract, extract_streaming
 from .probe import (
     Association,
     build_down_meta,
+    chance_level,
     describe,
     describe_entity,
     describe_feature,
@@ -27,6 +28,7 @@ from .evaluate import (
     frontier_table,
     run_battery,
     rank_by_ablation_effect,
+    spreading_answers,
     split_probes,
     study_edit,
     suppression_by_layer,
@@ -127,6 +129,8 @@ __all__ = [
     "frontier_table",
     "rank_by_ablation_effect",
     "split_probes",
+    "spreading_answers",
+    "chance_level",
     "BatteryResult",
     "BatteryDiff",
     # tracing (direct vs total effects), from marv-hyena

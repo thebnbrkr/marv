@@ -160,6 +160,23 @@ class DiffRow:
 
 
 _MARKS = {"flipped": "x", "degraded": "x", "improved": "+", "unchanged": "."}
+
+
+def spreading_answers(before, after, min_increase: int = 2, limit: int = 5) -> list[tuple[str, int, int]]:
+    """Wrong answers that spread: `before` and `after` are (correct, answer)
+    pairs for the same items. Returns [(answer, items giving it wrongly
+    before, after), ...] for answers that gained at least `min_increase`
+    items and at least doubled, most-spread first.
+
+    This catches what right->wrong counts miss: an edit or fine-tune that
+    pushes many prompts toward one answer (a new fact leaking, or a format
+    such as "is located in" taking over), including prompts that were
+    already wrong."""
+    b = Counter(ans for ok, ans in before if not ok and ans is not None)
+    a = Counter(ans for ok, ans in after if not ok and ans is not None)
+    out = [(ans, b.get(ans, 0), n) for ans, n in a.items()
+           if n - b.get(ans, 0) >= min_increase and n >= 2 * max(1, b.get(ans, 0))]
+    return sorted(out, key=lambda r: r[1] - r[2])[:limit]
 _ORDER = {"flipped": 0, "degraded": 1, "improved": 2, "unchanged": 3}
 
 
@@ -227,6 +244,11 @@ class BatteryDiff:
             out[t] = {"n": n, "moved": moved / n, "mean_dprob": dprob}
         return out
 
+    def spreading_answers(self) -> list[tuple[str, int, int]]:
+        """Wrong answers the edit spread to many prompts (see spreading_answers)."""
+        return spreading_answers([(r.rank_before == 1, r.top1_before) for r in self.rows],
+                                 [(r.rank_after == 1, r.top1_after) for r in self.rows])
+
     def summary(self) -> str:
         c = Counter(r.verdict for r in self.rows)
         head = (
@@ -234,6 +256,9 @@ class BatteryDiff:
             f"{c['improved']} improved, {c['unchanged']} unchanged  "
             f"(of {len(self.rows)})"
         )
+        for ans, n0, n1 in self.spreading_answers():
+            head += (f"\n  spreading answer {ans!r}: now the wrong answer to {n1} prompt(s), was {n0}"
+                     " (the edit may be changing a format or leaking an answer, not removing one fact)")
         if self.health is not None:
             hb, ha = self.health
             flag = "  <-- MODEL BROKEN, results uninterpretable" if ha.broken_vs(hb) else ""

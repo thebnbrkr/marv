@@ -1,10 +1,27 @@
 # Changelog
 
-Versions are git tags (`v0.3.2`). Depend on a tag, not on `main`:
+Versions are git tags (`v0.3.3`). Depend on a tag, not on `main`:
 
 ```
-marv @ git+https://github.com/thebnbrkr/marv@v0.3.2
+marv @ git+https://github.com/thebnbrkr/marv@v0.3.3
 ```
+
+## 0.3.3 (2026-10-06)
+
+Found by the Qwen2.5-0.5B notebook run on Colab: the bare-embedding browse
+view's best hits (cosine 0.10-0.16) were at the level a random query reaches
+on that layer (about 0.14 for 4,864 features in 896 dimensions), and the
+"remove Paris" edit pushed every capital prompt toward the answer "located"
+(3 prompts before, 9 after) rather than removing one fact. Neither was
+visible in MARV's output.
+
+### Added
+
+- `chance_level(vindex, layer)`: what random token embeddings score against a
+  layer's gate rows. `describe_entity` rows carry it and flag hits at chance
+  (`Association.at_chance`).
+- `study_edit` / `BatteryDiff` report spreading answers, the same check
+  `History.gate` runs, through one shared `spreading_answers` function.
 
 ## 0.3.2 (2026-10-06)
 

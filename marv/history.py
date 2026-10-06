@@ -505,13 +505,9 @@ class History:
                 by_tag.setdefault(tag, [0, 0])[0 if i in down else 1] += 1
         protected = [i for i in down if i in protect or protect & set(tags.get(i, ()))]
         diffs = np.array([b[i][1] - a[i][1] for i in common])
-        from collections import Counter
+        from .evaluate import spreading_answers
 
-        wrong_before = Counter(a[i][2] for i in common if not a[i][0] and a[i][2] is not None)
-        wrong_after = Counter(b[i][2] for i in common if not b[i][0] and b[i][2] is not None)
-        spreading = sorted(((ans, wrong_before.get(ans, 0), n) for ans, n in wrong_after.items()
-                            if n - wrong_before.get(ans, 0) >= 2 and n >= 2 * max(1, wrong_before.get(ans, 0))),
-                           key=lambda r: r[1] - r[2])[:5]
+        spreading = spreading_answers([(a[i][0], a[i][2]) for i in common], [(b[i][0], b[i][2]) for i in common])
         p = mcnemar_regression_p(len(down), len(up))
         net = len(down) > len(up) and p < alpha
         return TestComparison(test_name, len(common), len(down), len(up), p,
