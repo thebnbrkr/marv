@@ -244,6 +244,33 @@ def test_target_token_ids_prefers_leading_space_variant():
     assert r.target_rank == r2.target_rank and r.target_prob == r2.target_prob
 
 
+class SpaceBPETok(FakeTok):
+    """Mimics a BPE tokenizer's whitespace handling: each space-prefixed word
+    is one token, and a run of two spaces leaves a bare-space token behind."""
+
+    SPACE = 63
+
+    def encode(self, text, add_special_tokens=False):
+        import re
+
+        ids = []
+        for spaces, word in re.findall(r"( *)(\S+)", text):
+            if len(spaces) >= 2:
+                ids.append(self.SPACE)
+            ids.append(self._tok(word))
+        return ids
+
+
+def test_target_with_leading_space_is_not_scored_as_a_space():
+    from marv.evaluate import _target_token_ids
+    from marv.trace import _token_id
+
+    tok = SpaceBPETok()
+    assert _target_token_ids(tok, " Paris") == _target_token_ids(tok, "Paris")
+    assert SpaceBPETok.SPACE not in _target_token_ids(tok, " Paris")
+    assert _token_id(tok, " Paris") == tok.w2i["Paris"]
+
+
 def test_rank_by_ablation_effect_orders_by_measured_drop():
     model, tok = tiny_model(), FakeTok()
     probes = [Probe("the capital of France is", "Paris", ("target",))]
@@ -328,6 +355,32 @@ def test_extract_streaming_untied_lm_head(tmp_path):
 
     with pytest.raises(KeyError):
         extract_streaming(str(tmp_path), lm_head_key="not.a.key")
+
+
+def test_extract_streaming_reads_bf16_and_config_eps(tmp_path):
+    # Big checkpoints are bf16, which numpy has no dtype for.
+    import json
+
+    from safetensors.torch import save_file
+
+    from marv.extract import extract_streaming
+
+    h, inter, vocab = 8, 16, 32
+    g = torch.Generator().manual_seed(2)
+    gate = torch.randn(inter, h, generator=g).to(torch.bfloat16)
+    t = {
+        "model.layers.0.mlp.gate_proj.weight": gate,
+        "model.layers.0.mlp.down_proj.weight": torch.randn(h, inter, generator=g).to(torch.bfloat16),
+        "model.embed_tokens.weight": torch.randn(vocab, h, generator=g).to(torch.bfloat16),
+    }
+    save_file(t, str(tmp_path / "model.safetensors"))
+    (tmp_path / "config.json").write_text(json.dumps({"rms_norm_eps": 1e-6}))
+
+    v = extract_streaming(str(tmp_path))
+    assert v.gate[0].dtype == np.float32
+    np.testing.assert_array_equal(v.gate[0], gate.float().numpy())
+    assert v.norm_eps == 1e-6
+    assert extract_streaming(str(tmp_path), norm_eps=1e-5).norm_eps == 1e-5
 
 
 def test_describe_entity_sorted_and_tokenized():

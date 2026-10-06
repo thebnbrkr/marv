@@ -123,7 +123,7 @@ m = marv.logit_diff_metric(tok, " Rome", " Paris")
 marv.patch_sweep(model, tok, "The capital of Italy is", "The capital of France is", m).show()
 
 # 6. At which layer does "Italy" hand its information to the answer position?
-pos = tok("The capital of Italy is")["input_ids"].tolist().index(tok(" Italy", add_special_tokens=False)["input_ids"][0])
+pos = tok("The capital of Italy is")["input_ids"].index(tok(" Italy", add_special_tokens=False)["input_ids"][0])
 marv.trace_by_depth(model, tok, "The capital of Italy is", "The capital of France is", position=pos, metric=m)
 
 # 7. Neurons that never fire (their "top examples" are noise), and a shuffled-weights baseline
@@ -150,7 +150,7 @@ See `scripts/demo_smollm2.py` and the notebooks:
 
 ```
 marv/
-  arch.py       architecture adapter (module-name -> weight tensors)
+  arch.py       architecture adapters: every module path MARV uses; register_adapter for new ones
   extract.py    vindex extraction (in-RAM + streaming), save/load, layer bands
   probe.py      static weight-space analysis: gate-KNN, logit-lens, describe*
   context.py    contextual probing (real forward pass, through attention)

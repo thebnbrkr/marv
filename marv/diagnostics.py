@@ -30,7 +30,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
-from .trace import PARTS, all_components, capture_writes, mean_ablate, mean_writes
+from .trace import _adapter, _inputs, all_components, capture_writes, mean_ablate, mean_writes
 
 
 # ------------------------------------------------------------------ health
@@ -74,7 +74,7 @@ class LoadBearingRow:
     broken: bool
 
 
-def load_bearing(model, tokenizer, texts: list[str], parts=PARTS, keep: float = 0.5,
+def load_bearing(model, tokenizer, texts: list[str], parts=None, keep: float = 0.5,
                  device: str = "cpu") -> list[LoadBearingRow]:
     """Mean-ablate each single component (layer, part) and report health.
     `broken` = accuracy below `keep` x the unablated model's."""
@@ -98,7 +98,7 @@ class WriteNorm:
     share: float  # norm / norm of the final residual
 
 
-def write_norms(model, tokenizer, prompt: str, positions: list[int] | None = None,
+def write_norms(model, tokenizer, prompt, positions: list[int] | None = None,
                 device: str = "cpu") -> list[WriteNorm]:
     """Size of every write to the residual stream, and its share of the final residual."""
     w = capture_writes(model, tokenizer, prompt, positions, device)
@@ -110,7 +110,7 @@ def write_norms(model, tokenizer, prompt: str, positions: list[int] | None = Non
     return rows
 
 
-def find_bottlenecks(model, tokenizer, prompt: str, positions: list[int] | None = None,
+def find_bottlenecks(model, tokenizer, prompt, positions: list[int] | None = None,
                      min_share: float = 0.5, device: str = "cpu") -> list[tuple[int, str]]:
     """Components whose write alone is >= min_share of the final residual's norm."""
     return [(r.layer, r.part) for r in write_norms(model, tokenizer, prompt, positions, device)
@@ -123,7 +123,8 @@ def dead_features(model, tokenizer, texts: list[str], tol: float = 1e-6,
                   device: str = "cpu") -> dict[int, np.ndarray]:
     """Per layer, indices of MLP neurons (MARV features) whose activation
     act(gate) * up never exceeds `tol` in magnitude on any token of `texts`."""
-    layers = model.model.layers
+    ad = _adapter(model)
+    layers = ad.layers(model)
     peak = [None] * len(layers)
     handles = []
 
@@ -134,10 +135,10 @@ def dead_features(model, tokenizer, texts: list[str], tol: float = 1e-6,
         return pre
 
     try:
-        for i, blk in enumerate(layers):
-            handles.append(blk.mlp.down_proj.register_forward_pre_hook(make(i)))
+        for i in range(len(layers)):
+            handles.append(ad.ffn_out(model, i).register_forward_pre_hook(make(i)))
         for text in texts:
-            model(input_ids=tokenizer(text, return_tensors="pt")["input_ids"].to(device))
+            model(**_inputs(model, tokenizer, text, device))
     finally:
         for h in handles:
             h.remove()

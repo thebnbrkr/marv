@@ -1,4 +1,4 @@
-from .arch import ArchAdapter, LlamaStyleFFN, detect_adapter
+from .arch import ArchAdapter, LlamaStyleFFN, detect_adapter, register_adapter
 from .extract import VindexLite, default_layer_bands, extract, extract_streaming
 from .probe import (
     Association,
@@ -20,6 +20,7 @@ from .evaluate import (
     frontier_table,
     run_battery,
     rank_by_ablation_effect,
+    split_probes,
     study_edit,
     suppression_by_layer,
     suppression_frontier,
@@ -67,6 +68,7 @@ __all__ = [
     "ArchAdapter",
     "LlamaStyleFFN",
     "detect_adapter",
+    "register_adapter",
     "VindexLite",
     "extract",
     "extract_streaming",
@@ -100,6 +102,7 @@ __all__ = [
     "suppression_by_layer",
     "frontier_table",
     "rank_by_ablation_effect",
+    "split_probes",
     "BatteryResult",
     "BatteryDiff",
     # tracing (direct vs total effects), from marv-hyena

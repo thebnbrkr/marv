@@ -40,7 +40,7 @@ def test_broad_controls_is_wide_and_multidomain():
 def test_capital_edit_battery_shape():
     b = capital_edit_battery("France", "Paris", neighbours=("Italy", "Spain", "Germany"))
     tags = [p.tags for p in b]
-    assert sum("target" in t for t in tags) == 4
+    assert sum("target" in t for t in tags) == 8
     assert sum("neighbour" in t for t in tags) == 3
 
     # target country + neighbours must not leak into the control set
@@ -48,3 +48,28 @@ def test_capital_edit_battery_shape():
     for leaked in ("France", "Italy", "Spain", "Germany"):
         assert f"The capital of {leaked} is" not in control_prompts
     assert len(control_prompts) >= 90
+
+
+def test_split_probes_holds_out_selection_prompts():
+    from marv.evaluate import split_probes
+
+    b = capital_edit_battery("France", "Paris", neighbours=("Italy", "Spain", "Germany"))
+    select, evaluate = split_probes(b, tags=("target", "neighbour"))
+    sel = {p.prompt for p in select}
+    ev = {p.prompt for p in evaluate}
+    assert not sel & ev
+    assert sel | ev == {p.prompt for p in b}
+    for tag in ("target", "neighbour"):
+        assert any(tag in p.tags for p in select)
+        assert any(tag in p.tags for p in evaluate)
+    assert all("target" in p.tags or "neighbour" in p.tags for p in select)
+    assert split_probes(b, tags=("target", "neighbour")) == (select, evaluate)
+
+
+def test_split_probes_refuses_a_single_probe():
+    import pytest
+
+    from marv.evaluate import Probe, split_probes
+
+    with pytest.raises(ValueError, match="at least 2"):
+        split_probes([Probe("The capital of France is", "Paris", ("target",))])

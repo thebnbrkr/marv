@@ -194,7 +194,7 @@ def extract_streaming(
     embed_key: str = "model.embed_tokens.weight",
     lm_head_key: str | None = None,
     norm_key: str = "model.norm.weight",
-    norm_eps: float = 1e-5,
+    norm_eps: float | None = None,
     model_name: str = "",
 ) -> VindexLite:
     """Build a vindex from a directory of `.safetensors` shards without ever
@@ -207,7 +207,11 @@ def extract_streaming(
     treated as tied to the embedding. An explicit `lm_head_key` that is
     missing raises instead of silently falling back.
 
-    Needs the `safetensors` package; there is no live model
+    Tensors are read through torch (numpy has no bfloat16, and most large
+    checkpoints are bf16) and stored as float32. `norm_eps=None` reads
+    `rms_norm_eps` from the directory's config.json, falling back to 1e-6.
+
+    Needs `safetensors` and `torch`; there is no live model
     afterwards, so `marv.context` contextual probing is unavailable on a
     vindex built this way -- use `extract(model)` for that.
     """
@@ -223,7 +227,7 @@ def extract_streaming(
     # key -> file, so we can open only the shard that holds a tensor.
     key_to_file: dict[str, str] = {}
     for f in files:
-        with safe_open(f, framework="numpy") as handle:
+        with safe_open(f, framework="pt") as handle:
             for k in handle.keys():
                 key_to_file[k] = f
 
@@ -231,8 +235,13 @@ def extract_streaming(
         f = key_to_file.get(key)
         if f is None:
             raise KeyError(f"{key!r} not in any shard of {model_dir}")
-        with safe_open(f, framework="numpy") as handle:
-            return handle.get_tensor(key).astype(np.float32)
+        with safe_open(f, framework="pt") as handle:
+            return handle.get_tensor(key).float().numpy()
+
+    if norm_eps is None:
+        cfg_path = os.path.join(model_dir, "config.json")
+        cfg = json.load(open(cfg_path)) if os.path.exists(cfg_path) else {}
+        norm_eps = float(cfg.get("rms_norm_eps", 1e-6))
 
     if num_layers is None:
         num_layers = 0

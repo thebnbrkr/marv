@@ -52,7 +52,10 @@ Old `.npz` files missing the newer fields still load (defaults fill in).
 
 ```
 marv/
-  arch.py        ArchAdapter / LlamaStyleFFN — module-name -> (gate, up, down, embed, lm_head, norm)
+  arch.py        ArchAdapter / LlamaStyleFFN / register_adapter — every module path MARV uses
+                 (residual writes, FFN output, final norm, unembedding, gate/up/down). Refuses
+                 models it can't represent exactly (Gemma: Llama names, different maths).
+                 Other packages register their own (marv-audio: Whisper decoder).
   extract.py     VindexLite, extract(), extract_streaming(), default_layer_bands()
   probe.py       STATIC weight-space analysis (no forward pass, no attention):
                    top_features   — gate-KNN, respects vindex.suppressed
@@ -80,9 +83,14 @@ marv/
                  frontier_table (a suppression_frontier sweep as plain (n, drop, drop, moved) rows),
                  rank_by_ablation_effect (causal constellation — rank candidates by
                    measured target-prob drop when suppressed alone),
+                 split_probes (select/evaluate split: choose an edit on some prompts,
+                   score it on others, never the same ones),
                  BatteryDiff.show(full=) / .metrics() (per-tag efficacy vs collateral)
   trace.py       RESIDUAL-STREAM TRACING (activation-space). Llama-style layers add exactly two
                  writes each: attn (self_attn output) and mlp (mlp output); final = embed + all writes.
+                 Parts come from the adapter (Whisper decoder: self_attn, cross_attn, mlp); the
+                 final norm may be RMSNorm or LayerNorm (its bias is its own row). A `prompt` may
+                 be a dict of model inputs instead of a string.
                    capture_writes  — every write at chosen positions; .reconstruction_error() ~0
                    decompose_logit — DIRECT attribution of a logit difference through the frozen
                                      final RMSNorm; rows sum exactly to the real value (.check_error)

@@ -42,6 +42,56 @@ def test_detect_adapter_returns_llama_style():
     assert isinstance(detect_adapter(model), LlamaStyleFFN)
 
 
+def test_gemma_is_refused_not_guessed():
+    # Same module names as Llama, different maths: must not be accepted.
+    from transformers import GemmaConfig, GemmaForCausalLM
+
+    cfg = GemmaConfig(vocab_size=64, hidden_size=16, intermediate_size=32, num_hidden_layers=1,
+                      num_attention_heads=2, num_key_value_heads=1, head_dim=8)
+    with pytest.raises(ValueError, match="gemma"):
+        detect_adapter(GemmaForCausalLM(cfg))
+    with pytest.raises(ValueError):
+        extract(GemmaForCausalLM(cfg))
+
+
+def test_non_silu_llama_is_refused():
+    cfg = LlamaConfig(vocab_size=64, hidden_size=16, intermediate_size=32, num_hidden_layers=1,
+                      num_attention_heads=2, hidden_act="gelu")
+    with pytest.raises(ValueError, match="silu"):
+        detect_adapter(LlamaForCausalLM(cfg))
+
+
+def test_registered_adapter_is_tried_first():
+    from marv import arch
+
+    class Always(LlamaStyleFFN):
+        @classmethod
+        def matches(cls, model):
+            return None
+
+    try:
+        arch.register_adapter(Always)
+        assert type(detect_adapter(tiny_model())) is Always
+    finally:
+        arch._ADAPTERS.remove(Always)
+    assert type(detect_adapter(tiny_model())) is LlamaStyleFFN
+
+
+def test_frozen_layernorm_is_exact():
+    from marv.trace import _frozen_norm
+
+    torch.manual_seed(1)
+    norm = torch.nn.LayerNorm(16)
+    with torch.no_grad():
+        norm.weight.normal_()
+        norm.bias.normal_()
+    parts = [torch.randn(16) * s for s in (3.0, 0.5, 1.0)]
+    x = sum(parts)
+    f, const = _frozen_norm(norm, x)
+    recon = sum(f(p) for p in parts) + const
+    torch.testing.assert_close(recon, norm(x).detach(), atol=1e-5, rtol=1e-5)
+
+
 def test_extract_shapes():
     model = tiny_model()
     vindex = extract(model)

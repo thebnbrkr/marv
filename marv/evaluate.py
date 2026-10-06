@@ -60,10 +60,14 @@ def _target_token_ids(tokenizer, text: str) -> tuple[int, ...]:
     emit a different id for ' Paris' (what the model actually predicts
     mid-sentence) than 'Paris' (sentence start), and the capitalised vs
     lower forms differ again -- so gather all plausible first tokens and let
-    run_battery score the best/summed. Deduped, order-preserving."""
+    run_battery score the best/summed. Deduped, order-preserving.
+
+    The text is stripped first, so " Paris" gives the same candidates as
+    "Paris". Prepending a space to " Paris" would make "  Paris", whose first
+    token on BPE tokenizers is a bare space."""
     out: list[int] = []
-    forms = [" " + text, text, " " + text.strip(), text.strip()]
-    forms += [" " + text.strip().lower(), text.strip().capitalize()]
+    core = text.strip()
+    forms = [" " + core, core, " " + core.lower(), core.capitalize()]
     for form in forms:
         ids = tokenizer.encode(form, add_special_tokens=False)
         if ids and ids[0] not in out:
@@ -300,6 +304,40 @@ def study_edit(model, tokenizer, intervention, battery, device: str = "cpu",
     return rep
 
 
+def split_probes(probes, tags=("target",), frac: float = 0.5, seed: int = 0):
+    """Split a battery into (select, evaluate) so an edit is never scored on
+    the prompts used to choose it.
+
+    For each tag in `tags`, about `frac` of the probes carrying it go to
+    `select`, with at least one on each side. `evaluate` is everything else:
+    the rest of those tags plus every probe without them. Pick features (or a
+    layer) on `select`, report on `evaluate`. Deterministic for a given seed.
+
+        select, battery = split_probes(battery)
+        ranked = rank_by_ablation_effect(model, tok, pool,
+                                         [p for p in select if "target" in p.tags])
+        study_edit(model, tok, suppress(model, feats), battery)   # held-out
+    """
+    import random
+
+    probes = list(probes)
+    rng = random.Random(seed)
+    chosen: set[int] = set()
+    for tag in tags:
+        idx = [i for i, p in enumerate(probes) if tag in p.tags and i not in chosen]
+        if len(idx) < 2:
+            raise ValueError(
+                f"split_probes needs at least 2 {tag!r} probes to hold one out; got {len(idx)}. "
+                "Add rephrasings, or loosen the rank filter that dropped them."
+            )
+        rng.shuffle(idx)
+        k = min(max(1, round(len(idx) * frac)), len(idx) - 1)
+        chosen.update(idx[:k])
+    select = [p for i, p in enumerate(probes) if i in chosen]
+    evaluate = [p for i, p in enumerate(probes) if i not in chosen]
+    return select, evaluate
+
+
 def rank_by_ablation_effect(model, tokenizer, candidates, probes, device: str = "cpu", restore_between: bool = True):
     """Rank `candidates` (a list of (layer, feature)) by how much suppressing
     each ONE, alone, drops the mean target probability across `probes`. The
@@ -309,6 +347,9 @@ def rank_by_ablation_effect(model, tokenizer, candidates, probes, device: str = 
     One forward pass per candidate per probe, so keep the candidate pool
     modest (e.g. constellation()[:30]) and `probes` to the target rephrasings.
     Returns [((layer, feature), mean_prob_drop), ...] sorted by drop desc.
+
+    Features chosen here will look effective on these exact `probes`; score
+    the edit on different ones (see split_probes).
     """
     from .edit import suppress
 

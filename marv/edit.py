@@ -18,6 +18,9 @@ contribution to the residual stream for that pass -- and because the same
 column is (almost always) shared by several unrelated facts, that is also
 where the collateral damage comes from. `marv.evaluate.study_edit` is the
 tool for measuring it.
+
+Module paths come from the architecture adapter (marv.arch): "down_proj"
+above is `adapter.ffn_out`, which is `fc2` on a Whisper decoder.
 """
 from __future__ import annotations
 
@@ -26,8 +29,10 @@ from contextlib import contextmanager
 import torch
 
 
-def _mlp(model, layer: int):
-    return model.model.layers[layer].mlp
+def _ffn_out(model, layer: int):
+    from .arch import detect_adapter
+
+    return detect_adapter(model).ffn_out(model, layer)
 
 
 @contextmanager
@@ -57,7 +62,7 @@ def suppress(model, features):
 
     try:
         for layer, feats in by_layer.items():
-            h = _mlp(model, layer).down_proj.register_forward_pre_hook(make_hook(feats))
+            h = _ffn_out(model, layer).register_forward_pre_hook(make_hook(feats))
             handles.append(h)
         yield
     finally:
@@ -74,7 +79,7 @@ def ablate(model, features):
     with torch.no_grad():
         for layer, feat in features:
             layer, feat = int(layer), int(feat)
-            w = _mlp(model, layer).down_proj.weight  # (hidden, intermediate)
+            w = _ffn_out(model, layer).weight  # (hidden, intermediate)
             saved[(layer, feat)] = w[:, feat].clone()
             w[:, feat] = 0
     return saved
@@ -84,9 +89,8 @@ def restore(model, saved):
     """Undo ablate(): put the saved down_proj columns back."""
     with torch.no_grad():
         for (layer, feat), col in saved.items():
-            _mlp(model, layer).down_proj.weight[:, feat] = col.to(
-                _mlp(model, layer).down_proj.weight.device
-            )
+            w = _ffn_out(model, layer).weight
+            w[:, feat] = col.to(w.device)
 
 
 @contextmanager
@@ -104,7 +108,9 @@ def steer(model, layer: int, direction, alpha: float = 1.0):
             return (h,) + tuple(output[1:])
         return output + alpha * vec.to(output.device, output.dtype)
 
-    handle = model.model.layers[layer].register_forward_hook(hook)
+    from .arch import detect_adapter
+
+    handle = detect_adapter(model).layers(model)[layer].register_forward_hook(hook)
     try:
         yield
     finally:

@@ -198,7 +198,9 @@ def capital_edit_battery(
 ) -> list[Probe]:
     """The canonical "change one capital" battery:
 
-    - `target`   : four rephrasings of `country -> capital`
+    - `target`   : eight rephrasings of `country -> capital`, enough to
+                   choose an edit on some and score it on others
+                   (marv.evaluate.split_probes)
     - `neighbour`: `neighbours`' own capitals + a few `country`-linked facts
     - `control`  : `broad_controls()` with `country` and `neighbours` removed
 
@@ -212,6 +214,10 @@ def capital_edit_battery(
         Probe(f"The capital city of {c} is", capital, ("target",)),
         Probe(f"{capital} is the capital of", c, ("target",)),
         Probe(f"What is the capital of {c}? It is", capital, ("target",)),
+        Probe(f"{c}'s capital is", capital, ("target",)),
+        Probe(f"{c}'s capital city is", capital, ("target",)),
+        Probe(f"Q: What is the capital of {c}?\nA:", capital, ("target",)),
+        Probe(f"The government of {c} is based in", capital, ("target",)),
     ]
     nb = capital_probes(neighbours, tags=("neighbour", "capital"))
     controls = broad_controls(exclude_countries=(c, *neighbours), tag=control_tag)

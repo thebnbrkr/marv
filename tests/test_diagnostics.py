@@ -31,6 +31,16 @@ def test_writes_add_up_to_the_final_residual():
     assert w.reconstruction_error() < 1e-5
 
 
+def test_prompt_may_be_a_dict_of_model_inputs():
+    m, tok = tiny_model(), FakeTok()
+    ids = tok("the capital of France is")["input_ids"]
+    a = capture_writes(m, tok, "the capital of France is")
+    b = capture_writes(m, tok, {"input_ids": ids})
+    torch.testing.assert_close(a.final, b.final)
+    d = decompose_logit(m, tok, {"input_ids": ids}, "Paris", "Rome")
+    assert d.check_error < 1e-4
+
+
 def test_direct_attribution_sums_to_the_real_logit_difference():
     m, tok = tiny_model(), FakeTok()
     for target, baseline in (("Paris", None), ("Paris", "Rome"), ("Berlin", "the")):
