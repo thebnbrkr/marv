@@ -1,6 +1,6 @@
 [project]
 name = "marv"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Model Architecture Research via Vindex — turns a transformer's gated FFN weights into an inspectable index for browsing model knowledge and diffing checkpoints."
 requires-python = ">=3.10"
 dependencies = [
@@ -18,6 +18,9 @@ viz = ["matplotlib>=3.7", "scikit-learn>=1.3"]
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "marv._version.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["marv*"]

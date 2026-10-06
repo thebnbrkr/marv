@@ -7,3 +7,5 @@ venv/
 *.npz
 .ipynb_checkpoints/
 .DS_Store
+.marv/
+build/

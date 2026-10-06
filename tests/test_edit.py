@@ -461,3 +461,17 @@ def test_describe_entity_sorted_and_tokenized():
     rows2 = describe_entity(vindex, FakeTok(), "France", band="knowledge", k_features=3)
     flagged = [r for r in rows2 if r.suppressed]
     assert any(r.layer == rows[0].layer and r.feature == rows[0].feature for r in flagged)
+
+
+def test_active_features_selects_by_sign_from_the_start():
+    from marv.context import active_features, feature_activations_at_layers
+
+    model, tok = tiny_model(), FakeTok()
+    vindex = extract(model)
+    prompt = "the capital of France is"
+    a = feature_activations_at_layers(model, tok, prompt, [1])[1]
+    pos = active_features(model, tok, vindex, prompt, [1], k=5, sign="positive")
+    neg = active_features(model, tok, vindex, prompt, [1], k=5, sign="negative")
+    assert [r.feature for r in pos] == [int(f) for f in np.argsort(-a)[:5]]
+    assert [r.feature for r in neg] == [int(f) for f in np.argsort(a)[:5]]
+    assert all(r.activation > 0 for r in pos) and all(r.activation < 0 for r in neg)

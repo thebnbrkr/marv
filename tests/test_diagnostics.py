@@ -171,3 +171,39 @@ def test_mean_writes_skips_the_first_position():
     torch.testing.assert_close(got, w.parts[(1, "mlp")][1:].mean(0))
     got_all = mean_writes(m, tok, [text], [(1, "mlp")], skip_first=False)[(1, "mlp")]
     torch.testing.assert_close(got_all, w.parts[(1, "mlp")].mean(0))
+
+
+def test_recording_hooks_leave_the_model_bit_identical():
+    # an observer that changed the arithmetic would make every measurement
+    # describe a slightly different model
+    m, tok = tiny_model(), FakeTok()
+    ids = tok("the capital of France is")["input_ids"]
+    with torch.no_grad():
+        plain = m(input_ids=ids).logits.clone()
+    w = capture_writes(m, tok, "the capital of France is", positions=list(range(5)))
+    assert torch.equal(w.logits, plain[0].float())
+    with torch.no_grad(), replace_outputs(m, {c: (lambda x: x) for c in all_components(m)}):
+        identity = m(input_ids=ids).logits
+    assert torch.equal(identity, plain)
+    mean_writes(m, tok, TEXTS, all_components(m))
+    trace_by_depth(m, tok, "the capital of Italy is", "the capital of France is", 3,
+                   logit_diff_metric(tok, "Rome", "Paris"))
+    with torch.no_grad():
+        after = m(input_ids=ids).logits
+    assert torch.equal(after, plain), "a hook was left behind or changed the weights"
+
+
+def test_qwen3_decomposes_exactly():
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+
+    cfg = Qwen3Config(vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=3,
+                      num_attention_heads=4, num_key_value_heads=2, head_dim=8, tie_word_embeddings=True)
+    torch.manual_seed(0)
+    m = Qwen3ForCausalLM(cfg).eval()
+    with torch.no_grad():
+        for mod in m.modules():
+            if type(mod).__name__.endswith("RMSNorm"):
+                mod.weight.normal_(1.0, 0.3)
+    tok = FakeTok()
+    assert capture_writes(m, tok, "the capital of France is").reconstruction_error() < 1e-5
+    assert decompose_logit(m, tok, "the capital of France is", 6, 10).check_error < 1e-3

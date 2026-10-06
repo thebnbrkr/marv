@@ -1,3 +1,4 @@
+from ._version import __version__
 from .arch import ArchAdapter, LlamaStyleFFN, detect_adapter, register_adapter
 from .extract import VindexLite, default_layer_bands, extract, extract_streaming
 from .probe import (
@@ -63,6 +64,7 @@ from .diagnostics import (
     null_model,
     write_norms,
 )
+from .history import BatteryTest, History, Test, changed_neurons, revert_neurons
 from .batteries import (
     WORLD_CAPITALS,
     broad_controls,
@@ -164,4 +166,9 @@ __all__ = [
     "domain_probes",
     "broad_controls",
     "capital_edit_battery",
+    "History",
+    "Test",
+    "BatteryTest",
+    "changed_neurons",
+    "revert_neurons",
 ]

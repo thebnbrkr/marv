@@ -13,17 +13,16 @@ builds on it, pinned to `v0.2.0`.
 
 ## Next
 
-**Decision pending: the WSDM reranker study first, or History first.** The
-study does not need History, so the two can be ordered either way.
+**Order:** small trust items, then History (its revert and gate tools are what
+the reranker study needs), then the WSDM reranker study.
 
 ### Small, trust-building items
 
-- [ ] Test that recording hooks leave the model bit-identical (output with
+- [x] Test that recording hooks leave the model bit-identical (output with
       hooks == output without).
-- [ ] Permanent Qwen3 exactness test (a tiny Qwen3 already passes:
-      decomposition error 4e-5).
-- [ ] Signed ranking option for `active_features` (positive / negative /
-      both). Ranking by size lets one sign crowd out the other.
+- [x] Permanent Qwen3 exactness test.
+- [x] Signed ranking option for `active_features` (positive / negative /
+      both).
 - [ ] marv-audio E3: the matched-units audio split (real-clip split minus
       silence split). Predictions committed before running.
 
@@ -33,9 +32,9 @@ Test models before shipping them; find what changed and why. Weights stay on
 Hugging Face; History keeps test results. Colab-first: the results file is
 downloaded or exported as `results.jsonl` and committed to GitHub.
 
-1. [ ] Results database, `commit`, `log`, JSONL export/import, download/upload.
-2. [ ] `bisect`, `blame` with the revert test.
-3. [ ] `gate` with paired statistics.
+1. [x] Results database, `commit`, `log`, JSONL export/import, download/upload.
+2. [x] `bisect`, `blame` with the revert test.
+3. [x] `gate` with paired statistics.
 4. [ ] Trainer integration and a Colab notebook finding a planted fact.
 5. [ ] Optional `marv[bench]`: standard benchmarks via lm-evaluation-harness.
 

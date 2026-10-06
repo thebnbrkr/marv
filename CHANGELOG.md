@@ -6,6 +6,24 @@ Versions are git tags (`v0.2.0`). Depend on a tag, not on `main`:
 marv @ git+https://github.com/thebnbrkr/marv@v0.2.0
 ```
 
+## Unreleased
+
+### Added
+
+- `marv.History` (`docs/history-design.md`): a results database for testing
+  model versions. `commit` (never reruns a stored test), `log`, `gate` (paired
+  exact McNemar on right->wrong flips, bootstrap interval on scores, warns when
+  a test is too small), `bisect` (binary search over versions, reusing stored
+  results), `blame` (weight diff as a suspect list, then revert tests:
+  all-suspects ceiling, then halving to the smallest set that restores the
+  result, reporting when neurons only matter jointly), JSONL export/import,
+  Colab download/upload. Results record the weights' SHA-256 and the code
+  versions that produced them.
+- `revert_neurons`, `changed_neurons`; `ArchAdapter.neuron_params`.
+- `active_features(sign=...)`: select by sign from the start.
+- Tests: hooks leave the model bit-identical; Qwen3 decomposes exactly.
+- `marv.__version__`, single-sourced in `marv/_version.py`.
+
 ## 0.2.0 (2026-10-06)
 
 ### Breaking

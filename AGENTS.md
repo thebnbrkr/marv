@@ -109,6 +109,11 @@ marv/
                    dead_features (neurons that never fire: their top examples are noise),
                    null_model (weights shuffled per tensor: a baseline for artifacts),
                    compare_scale (run before trusting a null: are the two on one scale?)
+  history.py     HISTORY (docs/history-design.md): SQLite results database for model versions.
+                   commit (runs only tests a version hasn't run), log, gate (paired McNemar),
+                   bisect (over versions, reusing stored results), blame (diff = suspects, then
+                   revert tests prove the cause), export_jsonl / from_jsonl, download / upload.
+                   A run whose check failed is stored but never reported.
   batteries.py   curated probe sets: WORLD_CAPITALS + SCIENCE/LEXICAL/MATH/HISTORY/
                  COMMONSENSE lists, broad_controls() (~110 tagged by sub-domain),
                  capital_edit_battery(country, capital, neighbours). Pure data.

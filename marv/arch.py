@@ -68,6 +68,13 @@ class ArchAdapter:
     def final_norm(self, model) -> nn.Module:
         raise NotImplementedError
 
+    def neuron_params(self, model, layer: int) -> list[tuple[nn.Parameter, int]]:
+        """Every parameter slice that belongs to one FFN neuron, as
+        (parameter, axis): neuron f owns index f along `axis`. Copying these
+        slices from another model moves exactly that neuron (History's revert
+        test)."""
+        raise NotImplementedError
+
     def unembed(self, model) -> torch.Tensor:
         """Unembedding matrix, (vocab_size, hidden_size)."""
         raise NotImplementedError
@@ -141,6 +148,10 @@ class LlamaStyleFFN(ArchAdapter):
 
     def final_norm(self, model) -> nn.Module:
         return model.model.norm
+
+    def neuron_params(self, model, layer: int) -> list[tuple[nn.Parameter, int]]:
+        mlp = model.model.layers[layer].mlp
+        return [(mlp.gate_proj.weight, 0), (mlp.up_proj.weight, 0), (mlp.down_proj.weight, 1)]
 
     def unembed(self, model) -> torch.Tensor:
         return model.lm_head.weight.detach()

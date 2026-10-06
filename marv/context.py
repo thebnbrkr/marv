@@ -80,18 +80,31 @@ class ActiveFeature:
 
 
 def active_features(model, tokenizer, vindex: VindexLite, prompt, layers: list[int], k: int = 10,
-                    k_tokens: int = 5, baseline_prompt=None, device: str = "cpu") -> list[ActiveFeature]:
-    """The features that actually fire on `prompt`, by |activation|, with
-    what each one pushes up and down GIVEN the sign it fired with. With
-    `baseline_prompt`, ranks by the change in activation instead (what the
-    probe word adds). Sorted by |activation| across all `layers`."""
+                    k_tokens: int = 5, baseline_prompt=None, sign: str = "both",
+                    device: str = "cpu") -> list[ActiveFeature]:
+    """The features that actually fire on `prompt`, with what each one pushes
+    up and down GIVEN the sign it fired with. With `baseline_prompt`, ranks
+    by the change in activation instead (what the probe word adds).
+
+    `sign`: "both" takes the top `k` per layer by |activation|; "positive" /
+    "negative" take the top `k` of that sign only. Selecting by size and
+    filtering by sign afterwards is not the same thing: where one sign
+    dominates a layer, it fills the top-k and the other sign's features never
+    make the list (LARQL's sign-conflation note found 84% more features when
+    selecting by sign from the start). Sorted by |activation|."""
+    if sign not in ("both", "positive", "negative"):
+        raise ValueError(f"sign must be 'both', 'positive' or 'negative', got {sign!r}")
     acts = feature_activations_at_layers(model, tokenizer, prompt, layers, device)
     if baseline_prompt is not None:
         base = feature_activations_at_layers(model, tokenizer, baseline_prompt, layers, device)
         acts = {L: a - base[L] for L, a in acts.items()}
     rows = []
     for L, a in acts.items():
-        for f in np.argsort(-np.abs(a))[:k]:
+        key = {"both": -np.abs(a), "positive": -a, "negative": a}[sign]
+        picked = np.argsort(key)[:k]
+        if sign != "both":
+            picked = [f for f in picked if (a[f] > 0) == (sign == "positive") and a[f] != 0]
+        for f in picked:
             col = np.sign(a[f]) * vindex.down[L][:, f]
             up, _ = logit_lens(vindex, col, k=k_tokens)
             down, _ = logit_lens(vindex, -col, k=k_tokens)
