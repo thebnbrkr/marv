@@ -1,12 +1,14 @@
 # Changelog
 
-Versions are git tags (`v0.2.0`). Depend on a tag, not on `main`:
+Versions are git tags (`v0.3.0`). Depend on a tag, not on `main`:
 
 ```
-marv @ git+https://github.com/thebnbrkr/marv@v0.2.0
+marv @ git+https://github.com/thebnbrkr/marv@v0.3.0
 ```
 
-## Unreleased
+## 0.3.0 (2026-10-06)
+
+No breaking changes from 0.2.0.
 
 ### Added
 
@@ -19,6 +21,11 @@ marv @ git+https://github.com/thebnbrkr/marv@v0.2.0
   result, reporting when neurons only matter jointly), JSONL export/import,
   Colab download/upload. Results record the weights' SHA-256 and the code
   versions that produced them.
+- `history_callback`: a Trainer callback that commits and tests every saved
+  checkpoint; `checkpoint_loader` reloads them for bisect/blame (a reloaded
+  checkpoint's SHA-256 matches the one History tested).
+- `notebooks/marv_history_colab.ipynb`: teach SmolLM2-135M a made-up fact,
+  then log, bisect, gate and blame the training run.
 - `revert_neurons`, `changed_neurons`; `ArchAdapter.neuron_params`.
 - `active_features(sign=...)`: select by sign from the start.
 - Tests: hooks leave the model bit-identical; Qwen3 decomposes exactly.

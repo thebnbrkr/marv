@@ -3,7 +3,12 @@
 What comes next for MARV and its sibling packages. Updated 2026-10-06.
 Released versions and their breaking changes are in `CHANGELOG.md`.
 
-## Done (v0.2.0)
+## Done
+
+**v0.3.0:** History (`commit`, `log`, `gate`, `bisect`, `blame` with revert
+proof, Trainer callback, Colab notebook).
+
+**v0.2.0:**
 
 Architecture adapters with refusal of unsupported models; exact tracing
 through RMSNorm and LayerNorm; target-scoring, contextual-query and
@@ -23,8 +28,9 @@ the reranker study needs), then the WSDM reranker study.
 - [x] Permanent Qwen3 exactness test.
 - [x] Signed ranking option for `active_features` (positive / negative /
       both).
-- [ ] marv-audio E3: the matched-units audio split (real-clip split minus
-      silence split). Predictions committed before running.
+- [x] marv-audio E3: the matched-units audio split (real-clip split minus
+      silence split). Predictions committed before running; cross-attention
+      123%, MLPs −25%.
 
 ### History (`docs/history-design.md`)
 
@@ -35,7 +41,7 @@ downloaded or exported as `results.jsonl` and committed to GitHub.
 1. [x] Results database, `commit`, `log`, JSONL export/import, download/upload.
 2. [x] `bisect`, `blame` with the revert test.
 3. [x] `gate` with paired statistics.
-4. [ ] Trainer integration and a Colab notebook finding a planted fact.
+4. [x] Trainer integration and a Colab notebook finding a planted fact (v0.3.0).
 5. [ ] Optional `marv[bench]`: standard benchmarks via lm-evaluation-harness.
 
 ### WSDM study: why did a reranker update change the ranking?

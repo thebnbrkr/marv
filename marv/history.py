@@ -503,6 +503,8 @@ class History:
         all suspects first (the ceiling), then halve the suspect list while
         what remains still restores >= `threshold` of the lost score. Both
         versions are committed (with `test`) if they are not already."""
+        if not before or not after:
+            raise ValueError(f"blame needs two version labels, got {before!r} and {after!r}")
         m_before, m_after = load(before), load(after)
         for label, model in ((before, m_before), (after, m_after)):
             self.commit(model, tokenizer, label, [test], fetch_checksums=False, device=device)
@@ -606,3 +608,52 @@ class History:
 
     def close(self):
         self.db.close()
+
+
+# ------------------------------------------------------------------ training
+def history_callback(history: History, tokenizer, tests, label: str = "step-{step}",
+                     model_id: str | None = None):
+    """A transformers TrainerCallback that commits every saved checkpoint to
+    `history` and runs `tests` on it, so a training run leaves a full record:
+
+        trainer = Trainer(..., callbacks=[marv.history_callback(h, tok, [facts, controls])])
+
+    Keep the checkpoints (no `save_total_limit`, or `push_to_hub=True` with
+    `hub_strategy="every_save"`) if you want to bisect or blame later: History
+    stores results, not weights."""
+    from transformers import TrainerCallback
+
+    class _HistoryCallback(TrainerCallback):
+        def __init__(self):
+            self.parent = None
+
+        def on_save(self, args, state, control, model=None, **kwargs):
+            m = getattr(model, "module", model)
+            was_training = m.training
+            m.eval()
+            name = label.format(step=state.global_step)
+            device = str(next(m.parameters()).device)
+            history.commit(m, tokenizer, name, tests, model_id=model_id, step=state.global_step,
+                           parent=self.parent, fetch_checksums=False, device=device)
+            m.train(was_training)
+            self.parent = name
+
+    return _HistoryCallback()
+
+
+def checkpoint_loader(output_dir: str, model_class=None, **from_pretrained_kwargs):
+    """`load(label)` for bisect/blame over a Trainer's local checkpoints: the
+    trailing number of a label ("step-40") picks `output_dir/checkpoint-40`."""
+    import re
+
+    if model_class is None:
+        from transformers import AutoModelForCausalLM as model_class
+
+    def load(label: str):
+        m = re.search(r"(\d+)$", label)
+        if m is None:
+            raise ValueError(f"label {label!r} does not end in a step number")
+        path = os.path.join(output_dir, f"checkpoint-{m.group(1)}")
+        return model_class.from_pretrained(path, **from_pretrained_kwargs).eval()
+
+    return load

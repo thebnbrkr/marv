@@ -153,3 +153,33 @@ def test_mcnemar_and_power():
     assert mcnemar_regression_p(0, 0) == 1.0
     assert mcnemar_regression_p(5, 0) == pytest.approx(1 / 32)
     assert mcnemar_regression_p(3, 3) > 0.5
+
+
+def test_training_run_leaves_a_record_and_checkpoints_reload_exactly(tmp_path, world):
+    from transformers import Trainer, TrainingArguments
+
+    from marv.history import checkpoint_loader, history_callback, weights_sha256
+
+    tok, test, make, _ = world
+    model = make(0).train()
+    ids = torch.tensor([tok.encode("the capital of France is Paris and the weather in Tokyo")])
+
+    class Data(torch.utils.data.Dataset):
+        def __len__(self):
+            return 8
+
+        def __getitem__(self, i):
+            return {"input_ids": ids[0], "labels": ids[0]}
+
+    h = History(str(tmp_path / "h.sqlite"))
+    args = TrainingArguments(output_dir=str(tmp_path / "run"), max_steps=6, save_steps=2, per_device_train_batch_size=4,
+                             learning_rate=1e-2, use_cpu=True, report_to=[], logging_steps=100, save_only_model=True)
+    Trainer(model=model, args=args, train_dataset=Data(), callbacks=[history_callback(h, tok, [test])]).train()
+
+    assert h.versions() == ["step-2", "step-4", "step-6"]
+    parents = [r[0] for r in h.db.execute("SELECT parent FROM versions ORDER BY id")]
+    assert parents == [None, "step-2", "step-4"]
+    assert len(h.log("facts").rows) == 3
+    load = checkpoint_loader(str(tmp_path / "run"))
+    stored = h.db.execute("SELECT weights_sha256 FROM versions WHERE label='step-4'").fetchone()[0]
+    assert weights_sha256(load("step-4")) == stored  # the checkpoint on disk is exactly what was tested

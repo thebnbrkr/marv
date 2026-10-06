@@ -64,7 +64,15 @@ from .diagnostics import (
     null_model,
     write_norms,
 )
-from .history import BatteryTest, History, Test, changed_neurons, revert_neurons
+from .history import (
+    BatteryTest,
+    History,
+    Test,
+    changed_neurons,
+    checkpoint_loader,
+    history_callback,
+    revert_neurons,
+)
 from .batteries import (
     WORLD_CAPITALS,
     broad_controls,
@@ -171,4 +179,6 @@ __all__ = [
     "BatteryTest",
     "changed_neurons",
     "revert_neurons",
+    "history_callback",
+    "checkpoint_loader",
 ]

@@ -143,6 +143,7 @@ See `scripts/demo_smollm2.py` and the notebooks:
 | `notebooks/marv_llama32_1b_colab.ipynb` | end-to-end on Llama-3.2-1B: extract, browse, contextual constellation, edit, base-vs-instruct weight diff |
 | `notebooks/marv_qwen25_05b_colab.ipynb` | Qwen2.5-0.5B: causal constellation edit, per-layer breakdown of what carries the fact, Pareto frontier, then two weight diffs off one base (post-training, code training) |
 | `notebooks/marv_edit_eval_colab.ipynb` | evaluating an edit: causal constellation, efficacy vs. specificity, the Pareto frontier, `suppress` vs `ablate` vs `steer` |
+| `notebooks/marv_history_colab.ipynb` [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/thebnbrkr/marv/blob/main/notebooks/marv_history_colab.ipynb) | History: teach SmolLM2-135M a made-up fact, record every checkpoint, then `log`, `bisect`, `gate` and `blame` the run (Colab GPU, ~10 min) |
 | `notebooks/marv_tests_colab.ipynb` [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/thebnbrkr/marv/blob/main/notebooks/marv_tests_colab.ipynb) | the test suite plus exactness, target-token, lineage, provenance and scale checks on real SmolLM2-135M (CPU, ~3 min) |
 | `notebooks/marv_amd135m_edit_colab.ipynb` | knowledge-editing AMD-Llama-135M: narrow vs wide control battery (why 8 controls isn't enough), per-layer breakdown, base-vs-code weight diff |
 | `notebooks/marv_smollm2_colab.ipynb` | original SmolLM2 base vs tool-tuned probe |
