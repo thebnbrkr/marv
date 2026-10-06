@@ -64,13 +64,20 @@ def _target_token_ids(tokenizer, text: str) -> tuple[int, ...]:
 
     The text is stripped first, so " Paris" gives the same candidates as
     "Paris". Prepending a space to " Paris" would make "  Paris", whose first
-    token on BPE tokenizers is a bare space."""
+    token on BPE tokenizers is a bare space.
+
+    Only the leading-space form may contribute a word's first piece. The
+    other variants (no space, other case) count only as a single whole
+    token: " paris" splitting into " par" + "is" would otherwise add " par",
+    the start of " part", " park" and " parent", and "euro" would add "e"."""
     out: list[int] = []
     core = text.strip()
-    forms = [" " + core, core, " " + core.lower(), core.capitalize()]
-    for form in forms:
+    forms = [(" " + core, False), (core, True), (" " + core.lower(), True), (core.capitalize(), True)]
+    for form, variant in forms:
         ids = tokenizer.encode(form, add_special_tokens=False)
-        if ids and ids[0] not in out:
+        if not ids or (variant and len(ids) > 1):
+            continue
+        if ids[0] not in out:
             out.append(int(ids[0]))
     if not out:
         raise ValueError(f"target {text!r} tokenized to nothing")
@@ -151,7 +158,7 @@ _MARKS = {"flipped": "x", "degraded": "x", "improved": "+", "unchanged": "."}
 _ORDER = {"flipped": 0, "degraded": 1, "improved": 2, "unchanged": 3}
 
 
-def _verdict(b: ProbeRow, a: ProbeRow, eps: float = 0.05, rel: float = 0.5) -> str:
+def _verdict(b: ProbeRow, a: ProbeRow, eps: float = 0.05, rel: float = 0.5, floor: float = 0.01) -> str:
     """Target-centric: does the *target token* gain or lose ground. A control
     where the model was already wrong and its top-1 wanders does not count as
     an edit effect unless the target's own rank/prob moved.
@@ -159,6 +166,10 @@ def _verdict(b: ProbeRow, a: ProbeRow, eps: float = 0.05, rel: float = 0.5) -> s
     - flipped  : target held rank 1 and lost it, or gained rank 1
     - degraded : target prob fell by >= eps absolute or >= rel fraction
     - improved : target prob rose by >= eps absolute or >= rel fraction
+
+    The relative rule applies only when the larger of the two probabilities
+    is at least `floor`: 1e-5 -> 4e-6 is a 60% fall between two numbers that
+    are both effectively zero, not damage.
     """
     lost_top1 = b.target_rank == 1 and a.target_rank != 1
     gained_top1 = b.target_rank != 1 and a.target_rank == 1
@@ -166,9 +177,10 @@ def _verdict(b: ProbeRow, a: ProbeRow, eps: float = 0.05, rel: float = 0.5) -> s
         return "flipped"
     dp = a.target_prob - b.target_prob
     denom = max(b.target_prob, 1e-9)
-    if dp < -eps or dp / denom < -rel:
+    relative = max(a.target_prob, b.target_prob) >= floor
+    if dp < -eps or (relative and dp / denom < -rel):
         return "degraded"
-    if dp > eps or dp / denom > rel:
+    if dp > eps or (relative and dp / denom > rel):
         return "improved"
     return "unchanged"
 
@@ -338,7 +350,7 @@ def split_probes(probes, tags=("target",), frac: float = 0.5, seed: int = 0):
     return select, evaluate
 
 
-def rank_by_ablation_effect(model, tokenizer, candidates, probes, device: str = "cpu", restore_between: bool = True):
+def rank_by_ablation_effect(model, tokenizer, candidates, probes, device: str = "cpu"):
     """Rank `candidates` (a list of (layer, feature)) by how much suppressing
     each ONE, alone, drops the mean target probability across `probes`. The
     *causal* constellation -- it measures the thing you actually want (effect

@@ -76,6 +76,18 @@ class VindexLite:
     # forward pass, no attention.
     down_meta_tokens: list[np.ndarray] | None = field(default=None)
     down_meta_scores: list[np.ndarray] | None = field(default=None)
+    # Provenance: which exact weights this came from. `revision` is the HF
+    # commit hash when known; `source_dtype` the checkpoint's own dtype;
+    # `exact` False when the source was quantized (the float32 arrays here
+    # then hold dequantized approximations, not the trained weights).
+    revision: str = field(default="")
+    source_dtype: str = field(default="")
+    exact: bool = field(default=True)
+
+    @property
+    def tied(self) -> bool:
+        """lm_head is the embedding matrix (stored once)."""
+        return self.lm_head is self.embed
 
     def band(self, name: str) -> list[int]:
         """Layer indices in a named band ('syntax' | 'knowledge' | 'output')."""
@@ -103,7 +115,11 @@ class VindexLite:
         np.savez_compressed(
             path,
             embed=self.embed,
-            lm_head=self.lm_head,
+            lm_head=np.zeros(0, dtype=np.float32) if self.tied else self.lm_head,
+            lm_head_tied=self.tied,
+            revision=self.revision,
+            source_dtype=self.source_dtype,
+            exact=self.exact,
             hidden_size=self.hidden_size,
             num_layers=self.num_layers,
             final_norm_weight=self.final_norm_weight
@@ -139,11 +155,16 @@ class VindexLite:
             dm_tok = [z[f"dm_tok_{i}"] for i in range(n)]
             dm_score = [z[f"dm_score_{i}"] for i in range(n)]
 
+        embed = z["embed"]
+        tied = "lm_head_tied" in z and bool(z["lm_head_tied"])
         return cls(
             gate=[z[f"gate_{i}"] for i in range(n)],
             down=[z[f"down_{i}"] for i in range(n)],
-            embed=z["embed"],
-            lm_head=z["lm_head"],
+            embed=embed,
+            lm_head=embed if tied else z["lm_head"],
+            revision=str(z["revision"]) if "revision" in z else "",
+            source_dtype=str(z["source_dtype"]) if "source_dtype" in z else "",
+            exact=bool(z["exact"]) if "exact" in z else True,
             hidden_size=int(z["hidden_size"]),
             num_layers=n,
             final_norm_weight=norm_weight if norm_weight.size else None,
@@ -168,10 +189,14 @@ def extract(model, adapter: ArchAdapter | None = None, model_name: str = "") -> 
         # tensor) can never silently change an already-extracted vindex.
         gate.append(layer.gate.float().cpu().numpy().copy())
         down.append(layer.down.float().cpu().numpy().copy())
-    embed = adapter.embed(model).float().cpu().numpy().copy()
-    lm_head = adapter.lm_head(model).float().cpu().numpy().copy()
+    emb_t, head_t = adapter.embed(model), adapter.lm_head(model)
+    embed = emb_t.float().cpu().numpy().copy()
+    # a tied unembedding is stored once: same array object, not a copy
+    lm_head = embed if head_t.data_ptr() == emb_t.data_ptr() else head_t.float().cpu().numpy().copy()
     final_norm_weight = adapter.final_norm(model).weight.detach().float().cpu().numpy().copy()
-    norm_eps = float(getattr(model.config, "rms_norm_eps", 1e-6))
+    cfg = getattr(model, "config", None)
+    norm_eps = float(getattr(cfg, "rms_norm_eps", 1e-6))
+    source_dtype = str(adapter.ffn_layer(model, 0).down.dtype).replace("torch.", "")
     return VindexLite(
         gate=gate,
         down=down,
@@ -181,8 +206,11 @@ def extract(model, adapter: ArchAdapter | None = None, model_name: str = "") -> 
         num_layers=n,
         final_norm_weight=final_norm_weight,
         norm_eps=norm_eps,
-        model_name=model_name or getattr(getattr(model, "config", None), "_name_or_path", ""),
+        model_name=model_name or getattr(cfg, "_name_or_path", ""),
         layer_bands=default_layer_bands(n),
+        revision=str(getattr(cfg, "_commit_hash", None) or ""),
+        source_dtype=source_dtype,
+        exact=getattr(cfg, "quantization_config", None) is None,
     )
 
 
@@ -231,12 +259,16 @@ def extract_streaming(
             for k in handle.keys():
                 key_to_file[k] = f
 
+    dtypes: set[str] = set()
+
     def get(key: str) -> np.ndarray:
         f = key_to_file.get(key)
         if f is None:
             raise KeyError(f"{key!r} not in any shard of {model_dir}")
         with safe_open(f, framework="pt") as handle:
-            return handle.get_tensor(key).float().numpy()
+            t = handle.get_tensor(key)
+        dtypes.add(str(t.dtype).replace("torch.", ""))
+        return t.float().numpy()
 
     if norm_eps is None:
         cfg_path = os.path.join(model_dir, "config.json")
@@ -263,7 +295,7 @@ def extract_streaming(
         lm_head = get(lm_head_key)
     else:
         found = next((k for k in ("lm_head.weight", "model.lm_head.weight") if k in key_to_file), None)
-        lm_head = get(found) if found is not None else embed  # tied
+        lm_head = get(found) if found is not None else embed  # tied: the same array
     try:
         final_norm_weight = get(norm_key)
     except KeyError:
@@ -280,4 +312,9 @@ def extract_streaming(
         norm_eps=norm_eps,
         model_name=model_name or model_dir,
         layer_bands=default_layer_bands(num_layers),
+        # an HF cache path ends in snapshots/<commit hash>
+        revision=os.path.basename(os.path.normpath(model_dir))
+        if os.path.basename(os.path.dirname(os.path.normpath(model_dir))) == "snapshots" else "",
+        source_dtype=",".join(sorted(dtypes)),
+        exact=not any(d.startswith(("int", "uint", "float8")) for d in dtypes),
     )

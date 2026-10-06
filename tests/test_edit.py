@@ -271,6 +271,36 @@ def test_target_with_leading_space_is_not_scored_as_a_space():
     assert _token_id(tok, " Paris") == tok.w2i["Paris"]
 
 
+class CaseSplitTok(SpaceBPETok):
+    """Lowercase " paris" splits into " par" + "is", as on real BPE vocabularies."""
+
+    def _tok(self, w):
+        return {"paris": 61, "is_suffix": 62}.get(w, super()._tok(w))
+
+    def encode(self, text, add_special_tokens=False):
+        ids = []
+        for i in super().encode(text):
+            ids += [60, 62] if i == 61 else [i]  # 60 = " par"
+        return ids
+
+
+def test_lowercase_prefix_token_is_not_a_target_candidate():
+    from marv.evaluate import _target_token_ids
+
+    assert 60 not in _target_token_ids(CaseSplitTok(), "Paris")
+
+
+def test_tiny_probabilities_are_not_counted_as_damage():
+    from marv.evaluate import ProbeRow, _verdict
+
+    def row(p):
+        return ProbeRow("q", "t", (1,), "x", 2, 50, p, ())
+
+    assert _verdict(row(1e-5), row(4e-6)) == "unchanged"
+    assert _verdict(row(0.04), row(0.015)) == "degraded"  # relative rule still applies above the floor
+    assert _verdict(row(0.30), row(0.20)) == "degraded"
+
+
 def test_rank_by_ablation_effect_orders_by_measured_drop():
     model, tok = tiny_model(), FakeTok()
     probes = [Probe("the capital of France is", "Paris", ("target",))]
@@ -292,7 +322,42 @@ def test_contextual_constellation_runs():
         baseline_prompt="the capital of", per_layer=2,
     )
     assert rows
+    assert [abs(r.sim) for r in rows] == sorted((abs(r.sim) for r in rows), reverse=True)
+    rows = constellation(
+        vindex, tok, "France", model=model, prompt="the capital of France is",
+        baseline_prompt="the capital of", per_layer=2, by="cosine",
+    )
     assert [r.sim for r in rows] == sorted((r.sim for r in rows), reverse=True)
+
+
+def test_contextual_query_is_the_real_ffn_input():
+    from marv.context import active_features, feature_activations_at_layers, hidden_states_at_layers
+
+    model, tok = tiny_model(), FakeTok()
+    prompt = "the capital of France is"
+    seen = {}
+    hooks = [model.model.layers[L].post_attention_layernorm.register_forward_hook(
+        lambda _m, _i, o, L=L: seen.__setitem__(L, o[0, -1].detach().numpy())) for L in (0, 2)]
+    with torch.no_grad():
+        model(**tok(prompt))
+    for h in hooks:
+        h.remove()
+
+    hs = hidden_states_at_layers(model, tok, prompt, [0, 2])
+    acts = feature_activations_at_layers(model, tok, prompt, [0, 2])
+    for L in (0, 2):
+        np.testing.assert_allclose(hs[L], seen[L], rtol=1e-5, atol=1e-6)
+        mlp = model.model.layers[L].mlp
+        x = torch.as_tensor(hs[L])
+        want = (mlp.act_fn(mlp.gate_proj(x)) * mlp.up_proj(x)).detach().numpy()
+        np.testing.assert_allclose(acts[L], want, rtol=1e-4, atol=1e-6)
+
+    # tokens are read in the direction the feature actually fired
+    vindex = extract(model)
+    for r in active_features(model, tok, vindex, prompt, [1], k=6):
+        col = np.sign(r.activation) * vindex.down[1][:, r.feature]
+        assert r.pushes_up == [int(t) for t in logit_lens(vindex, col, k=5)[0]]
+        assert r.pushes_down == [int(t) for t in logit_lens(vindex, -col, k=5)[0]]
 
 
 def test_study_edit_returns_report():

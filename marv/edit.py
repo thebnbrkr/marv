@@ -129,6 +129,7 @@ def constellation(
     per_layer: int = 4,
     k_tokens: int = 5,
     embed_scale: float = 1.0,
+    by: str = "activation",
     device: str = "cpu",
 ):
     """The ranked set of (layer, feature) that carry `entity`'s associations
@@ -139,6 +140,12 @@ def constellation(
     this is noisy -- pass `model` (and optionally `prompt`, default a short
     template about `entity`, plus `baseline_prompt` to difference against) to
     query the model's *actual* hidden state instead. Much sharper.
+
+    With a model, `by="activation"` (default) ranks features by their real,
+    signed activation on `prompt` (minus `baseline_prompt`'s), and `sim`
+    holds that activation; `tokens` are what the feature pushes UP given its
+    sign. `by="cosine"` is the older gate-row cosine proxy against the FFN
+    input, which ignores `up` and the sign.
 
     Returns Association rows sorted by similarity; slice `[:n]` for a minimal
     constellation. For the *causal* version -- rank by measured suppression
@@ -156,6 +163,19 @@ def constellation(
 
     prompt = prompt or f"Tell me about {entity}."
     layers = vindex.band(band)
+    if by == "activation":
+        from .context import active_features
+
+        hits = active_features(model, tokenizer, vindex, prompt, layers, k=per_layer, k_tokens=k_tokens,
+                               baseline_prompt=baseline_prompt, device=device)
+        return [
+            Association(layer=r.layer, feature=r.feature, sim=r.activation,
+                        tokens=[t.strip() for t in tokenizer.batch_decode([[t] for t in r.pushes_up])],
+                        suppressed=(r.layer, r.feature) in vindex.suppressed)
+            for r in hits
+        ]
+    if by != "cosine":
+        raise ValueError(f"by must be 'activation' or 'cosine', got {by!r}")
     hs = hidden_states_at_layers(model, tokenizer, prompt, layers, device=device)
     base = (
         hidden_states_at_layers(model, tokenizer, baseline_prompt, layers, device=device)

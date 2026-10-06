@@ -23,17 +23,49 @@ class FeatureDelta:
     gate_norm_ratio: float  # ||gate_after|| / ||gate_before||
 
 
-def diff(base: VindexLite, tuned: VindexLite) -> list[FeatureDelta]:
+def lineage_score(base: VindexLite, tuned: VindexLite) -> float:
+    """Median gate-row cosine between two vindexes, over every feature.
+
+    Feature 4123 in two separately trained models are unrelated, like line 50
+    of two different programs; after fine-tuning from a common base it is the
+    same feature, changed. So this is near 1 within one lineage (a base and
+    its fine-tunes, fp16 vs int4) and near 0 between unrelated models (a
+    shuffled `null_model` gives ~0). Checkpoints far apart in one training run
+    can sit in between.
+    """
+    cos = []
+    for g0, g1 in zip(base.gate, tuned.gate):
+        n = np.linalg.norm(g0, axis=1) * np.linalg.norm(g1, axis=1) + 1e-8
+        cos.append(np.sum(g0 * g1, axis=1) / n)
+    return float(np.median(np.concatenate(cos)))
+
+
+def diff(base: VindexLite, tuned: VindexLite, *, min_lineage: float | None = 0.5) -> list[FeatureDelta]:
     """Per-(layer, feature) cosine similarity of the gate row and down column
     between two checkpoints sharing the same architecture. Low gate_cos_sim
     means fine-tuning repointed what that feature fires on; low down_cos_sim
     means it repointed what the feature promotes when it fires.
+
+    A diff only means something within one lineage. Refuses (ValueError) when
+    lineage_score is below `min_lineage`; pass `min_lineage=None` to diff
+    anyway, e.g. two checkpoints far apart in one pretraining run.
     """
     if base.num_layers != tuned.num_layers:
         raise ValueError(
             "marv.diff requires matching layer counts (same base architecture); "
             f"got {base.num_layers} vs {tuned.num_layers}"
         )
+    for layer in range(base.num_layers):
+        if base.gate[layer].shape != tuned.gate[layer].shape:
+            raise ValueError(f"layer {layer}: gate shape {base.gate[layer].shape} != {tuned.gate[layer].shape}")
+    if min_lineage is not None:
+        score = lineage_score(base, tuned)
+        if score < min_lineage:
+            raise ValueError(
+                f"these checkpoints look unrelated (median gate cosine {score:.3f} < {min_lineage}): "
+                "per-feature deltas between separately trained models are meaningless. "
+                "Pass min_lineage=None if they really are one lineage."
+            )
     deltas: list[FeatureDelta] = []
     for layer in range(base.num_layers):
         g0, g1 = base.gate[layer], tuned.gate[layer]

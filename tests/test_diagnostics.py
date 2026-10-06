@@ -134,3 +134,40 @@ def test_study_edit_reports_health():
     hb, ha = rep.health
     assert 0 <= hb.accuracy <= 1 and 0 <= ha.accuracy <= 1
     assert "health" in rep.summary()
+
+
+def test_dead_features_finds_near_silent_neurons():
+    # SiLU is almost never exactly 0: a neuron scaled ~1000x below its layer
+    # is dead in practice, yet still above an absolute 1e-6
+    m, tok = tiny_model(), FakeTok()
+    with torch.no_grad():
+        m.model.layers[1].mlp.gate_proj.weight[9] *= 3e-2
+        m.model.layers[1].mlp.up_proj.weight[9] *= 3e-2
+    assert 9 in dead_features(m, tok, TEXTS)[1]
+    assert 9 not in dead_features(m, tok, TEXTS, tol=1e-6)[1]
+
+
+def test_compare_scale_flags_a_mismatched_model():
+    import copy
+
+    from marv.diagnostics import compare_scale
+
+    m, tok = tiny_model(), FakeTok()
+    same = compare_scale(m, m, tok, "the capital of France is")
+    assert same.ok and abs(same.final_ratio - 1) < 1e-6
+    big = copy.deepcopy(m)
+    with torch.no_grad():
+        for blk in big.model.layers:
+            blk.mlp.down_proj.weight *= 1000
+            blk.self_attn.o_proj.weight *= 1000
+    assert not compare_scale(m, big, tok, "the capital of France is").ok
+
+
+def test_mean_writes_skips_the_first_position():
+    m, tok = tiny_model(), FakeTok()
+    text = "the capital of France is"
+    w = capture_writes(m, tok, text, positions=list(range(5)))
+    got = mean_writes(m, tok, [text], [(1, "mlp")])[(1, "mlp")]
+    torch.testing.assert_close(got, w.parts[(1, "mlp")][1:].mean(0))
+    got_all = mean_writes(m, tok, [text], [(1, "mlp")], skip_first=False)[(1, "mlp")]
+    torch.testing.assert_close(got_all, w.parts[(1, "mlp")].mean(0))

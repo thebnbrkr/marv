@@ -119,10 +119,14 @@ def find_bottlenecks(model, tokenizer, prompt, positions: list[int] | None = Non
 
 # ------------------------------------------------------------------ dead features
 @torch.no_grad()
-def dead_features(model, tokenizer, texts: list[str], tol: float = 1e-6,
+def dead_features(model, tokenizer, texts: list[str], rel: float = 0.01, tol: float | None = None,
                   device: str = "cpu") -> dict[int, np.ndarray]:
-    """Per layer, indices of MLP neurons (MARV features) whose activation
-    act(gate) * up never exceeds `tol` in magnitude on any token of `texts`."""
+    """Per layer, indices of MLP neurons (MARV features) whose peak |activation|
+    over every token of `texts` stays below `rel` x the layer's median peak.
+
+    Relative, because SiLU and GELU are almost never exactly zero: an absolute
+    cut-off like 1e-6 finds almost nothing. Pass `tol` for an absolute
+    threshold instead."""
     ad = _adapter(model)
     layers = ad.layers(model)
     peak = [None] * len(layers)
@@ -142,15 +146,46 @@ def dead_features(model, tokenizer, texts: list[str], tol: float = 1e-6,
     finally:
         for h in handles:
             h.remove()
-    return {i: torch.nonzero(p <= tol).flatten().cpu().numpy() for i, p in enumerate(peak)}
+    out = {}
+    for i, p in enumerate(peak):
+        cut = tol if tol is not None else rel * float(p.median())
+        out[i] = torch.nonzero(p <= cut).flatten().cpu().numpy()
+    return out
 
 
 # ------------------------------------------------------------------ null model
+@dataclass
+class ScaleCheck:
+    final_ratio: float  # |final residual| of other / of model
+    write_ratio: float  # median over components of |write| other / model
+    ok: bool
+
+
+def compare_scale(model, other, tokenizer, prompt, factor: float = 10.0, device: str = "cpu") -> ScaleCheck:
+    """Are two models' residual streams on a comparable scale? Run before
+    trusting a null-model comparison: a shuffled model can write at a wholly
+    different scale, and then "the effect vanished on the null" may only mean
+    every number shrank. `ok` is False when either ratio is off by more than
+    `factor` in either direction."""
+    a = write_norms(model, tokenizer, prompt, device=device)
+    b = write_norms(other, tokenizer, prompt, device=device)
+    wa = {(r.layer, r.part): r.norm for r in a if r.layer is not None}
+    wb = {(r.layer, r.part): r.norm for r in b if r.layer is not None}
+    final_a = float(capture_writes(model, tokenizer, prompt, device=device).final.norm(dim=-1).mean())
+    final_b = float(capture_writes(other, tokenizer, prompt, device=device).final.norm(dim=-1).mean())
+    final_ratio = final_b / max(final_a, 1e-12)
+    write_ratio = float(np.median([wb[k] / max(wa[k], 1e-12) for k in wa]))
+    ok = all(1 / factor <= r <= factor for r in (final_ratio, write_ratio))
+    return ScaleCheck(final_ratio, write_ratio, ok)
+
+
 def null_model(model, seed: int = 0):
     """A copy of `model` whose every weight tensor is randomly permuted: the
     same value distribution per tensor, none of the learned structure. Use it
     as a baseline: run your analysis on both, and treat whatever survives on
-    the null model as an artifact. Doubles memory (it's a deep copy)."""
+    the null model as an artifact. Doubles memory (it's a deep copy).
+    Check `compare_scale(model, null, ...)` first: if the null writes at a
+    very different scale, a comparison against it is not like for like."""
     null = copy.deepcopy(model)
     g = torch.Generator().manual_seed(seed)
     with torch.no_grad():

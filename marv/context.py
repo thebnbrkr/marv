@@ -9,28 +9,95 @@ into, so KNN hits against it tend to be weak. Running the prompt through the
 model and reading its *actual* hidden state at that layer puts the query in
 the right basis and gives much stronger matches.
 
-Nothing here is architecture-specific: any model whose HF forward accepts
-`output_hidden_states=True` works (Llama, Mistral, Qwen, TinyLlama, ...).
+The query at layer L is what layer L's FFN actually receives: the residual
+after that layer's attention, passed through its pre-FFN norm (read with a
+hook on `adapter.ffn_in`). That is the vector the gate rows multiply. HF's
+`output_hidden_states` gives something else, the residual AFTER the FFN has
+written and without the norm (and the last entry already final-normed), so
+it is not used here.
+
+Cosine similarity with a gate row is still only a proxy for "fires": in a
+gated MLP a feature's activation is act(gate . x) * (up . x), and a negative
+up . x makes the feature push its tokens DOWN. `active_features` reads the
+real, signed activation instead and reports both directions.
+
 The tool-calling helpers that used to live here moved to marv/toolcall.py,
 which is now an optional domain layer on top of this module.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 
 from .extract import VindexLite
-from .probe import describe_feature, top_features
+from .probe import describe_feature, logit_lens, top_features
 
 
-def hidden_states_at_layers(model, tokenizer, prompt: str, layers: list[int], device: str = "cpu"):
-    """Last-token residual stream at each requested layer -- a cheap
-    stand-in for a full forward-hook capture system."""
-    inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    with torch.no_grad():
-        out = model(**inputs, output_hidden_states=True)
-    # hidden_states[0] is the embedding output; layer i's output is hidden_states[i+1]
-    return {L: out.hidden_states[L + 1][0, -1, :].float().cpu().numpy() for L in layers}
+@torch.no_grad()
+def _last_inputs(model, tokenizer, prompt, layers, module_of, device):
+    from .trace import _adapter, _inputs
+
+    ad = _adapter(model)
+    out, handles = {}, []
+
+    def make(L):
+        def pre(_m, args):
+            out[L] = args[0][0, -1].float().cpu().numpy()
+        return pre
+
+    try:
+        for L in layers:
+            handles.append(module_of(ad, model, L).register_forward_pre_hook(make(L)))
+        model(**_inputs(model, tokenizer, prompt, device))
+    finally:
+        for h in handles:
+            h.remove()
+    return out
+
+
+def hidden_states_at_layers(model, tokenizer, prompt, layers: list[int], device: str = "cpu"):
+    """Last-token FFN input at each requested layer: the normalised residual
+    the layer's gate rows actually multiply. {layer: (hidden,) array}."""
+    return _last_inputs(model, tokenizer, prompt, layers, lambda ad, m, L: ad.ffn_in(m, L), device)
+
+
+def feature_activations_at_layers(model, tokenizer, prompt, layers: list[int], device: str = "cpu"):
+    """Last-token feature activations at each requested layer, exactly as the
+    FFN output projection receives them (act(gate . x) * (up . x) for a gated
+    MLP). Signed. {layer: (intermediate,) array}."""
+    return _last_inputs(model, tokenizer, prompt, layers, lambda ad, m, L: ad.ffn_out(m, L), device)
+
+
+@dataclass
+class ActiveFeature:
+    layer: int
+    feature: int
+    activation: float  # signed; minus the baseline's when a baseline was given
+    pushes_up: list[int]  # token ids this feature currently promotes
+    pushes_down: list[int]  # token ids it currently suppresses
+
+
+def active_features(model, tokenizer, vindex: VindexLite, prompt, layers: list[int], k: int = 10,
+                    k_tokens: int = 5, baseline_prompt=None, device: str = "cpu") -> list[ActiveFeature]:
+    """The features that actually fire on `prompt`, by |activation|, with
+    what each one pushes up and down GIVEN the sign it fired with. With
+    `baseline_prompt`, ranks by the change in activation instead (what the
+    probe word adds). Sorted by |activation| across all `layers`."""
+    acts = feature_activations_at_layers(model, tokenizer, prompt, layers, device)
+    if baseline_prompt is not None:
+        base = feature_activations_at_layers(model, tokenizer, baseline_prompt, layers, device)
+        acts = {L: a - base[L] for L, a in acts.items()}
+    rows = []
+    for L, a in acts.items():
+        for f in np.argsort(-np.abs(a))[:k]:
+            col = np.sign(a[f]) * vindex.down[L][:, f]
+            up, _ = logit_lens(vindex, col, k=k_tokens)
+            down, _ = logit_lens(vindex, -col, k=k_tokens)
+            rows.append(ActiveFeature(L, int(f), float(a[f]), [int(t) for t in up], [int(t) for t in down]))
+    rows.sort(key=lambda r: -abs(r.activation))
+    return rows
 
 
 def describe_prompt(

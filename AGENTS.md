@@ -64,9 +64,13 @@ marv/
                                     is ~50x faster on a big vocab)
                    describe_feature / describe / describe_entity
   context.py     CONTEXTUAL probing (real forward pass, through attention):
-                   hidden_states_at_layers, describe_prompt (baseline-differenced)
+                   hidden_states_at_layers (the FFN's real input: post-attention, normalised),
+                   feature_activations_at_layers (signed activations as down_proj receives them),
+                   active_features (what fires, and what it pushes up AND down given its sign),
+                   describe_prompt (baseline-differenced)
   diff.py        weight-space checkpoint diff: FeatureDelta(gate_cos_sim, down_cos_sim,
-                 gate_norm_ratio), most_changed(), per_layer_score()
+                 gate_norm_ratio), most_changed(), per_layer_score(); lineage_score, and diff()
+                 refuses unrelated checkpoints (min_lineage=None to override)
   edit.py        interventions on a LIVE model:
                    suppress(model, feats)  — forward hooks, reversible (context manager)
                    ablate(model, feats)    — zero down_proj[:, f] in place, permanent
@@ -103,7 +107,8 @@ marv/
                    load_bearing (single components that break the model alone),
                    write_norms / find_bottlenecks (one write dominating the residual),
                    dead_features (neurons that never fire: their top examples are noise),
-                   null_model (weights shuffled per tensor: a baseline for artifacts)
+                   null_model (weights shuffled per tensor: a baseline for artifacts),
+                   compare_scale (run before trusting a null: are the two on one scale?)
   batteries.py   curated probe sets: WORLD_CAPITALS + SCIENCE/LEXICAL/MATH/HISTORY/
                  COMMONSENSE lists, broad_controls() (~110 tagged by sub-domain),
                  capital_edit_battery(country, capital, neighbours). Pure data.

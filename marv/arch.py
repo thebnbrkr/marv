@@ -55,6 +55,11 @@ class ArchAdapter:
         """The module whose forward OUTPUT is exactly this part's residual write."""
         raise NotImplementedError
 
+    def ffn_in(self, model, layer: int) -> nn.Module:
+        """A module whose forward INPUT is exactly the vector the FFN's gate
+        rows multiply: the residual after this layer's attention, normalised."""
+        raise NotImplementedError
+
     def ffn_out(self, model, layer: int) -> nn.Linear:
         """The FFN's output projection: its INPUT is the per-feature activation
         vector, and its weight[:, f] is feature f's write direction."""
@@ -127,6 +132,9 @@ class LlamaStyleFFN(ArchAdapter):
         if part == "mlp":
             return blk.mlp
         raise ValueError(f"part must be one of {self.parts}, got {part!r}")
+
+    def ffn_in(self, model, layer: int) -> nn.Module:
+        return model.model.layers[layer].mlp
 
     def ffn_out(self, model, layer: int) -> nn.Linear:
         return model.model.layers[layer].mlp.down_proj

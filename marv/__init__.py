@@ -9,8 +9,14 @@ from .probe import (
     logit_lens,
     top_features,
 )
-from .context import describe_prompt, hidden_states_at_layers
-from .diff import FeatureDelta, diff, most_changed, per_layer_score
+from .context import (
+    ActiveFeature,
+    active_features,
+    describe_prompt,
+    feature_activations_at_layers,
+    hidden_states_at_layers,
+)
+from .diff import FeatureDelta, diff, lineage_score, most_changed, per_layer_score
 from .edit import ablate, constellation, restore, steer, suppress
 from .evaluate import (
     BatteryDiff,
@@ -48,6 +54,8 @@ from .trace import (
 )
 from .diagnostics import (
     Health,
+    ScaleCheck,
+    compare_scale,
     dead_features,
     find_bottlenecks,
     health,
@@ -83,6 +91,12 @@ __all__ = [
     "Association",
     "describe_prompt",
     "hidden_states_at_layers",
+    "feature_activations_at_layers",
+    "active_features",
+    "ActiveFeature",
+    "lineage_score",
+    "compare_scale",
+    "ScaleCheck",
     # diff
     "FeatureDelta",
     "diff",

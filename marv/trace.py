@@ -306,9 +306,14 @@ def decompose_logit(model, tokenizer, prompt, target, baseline=None, device: str
 
 # ------------------------------------------------------------------ total effects
 @torch.no_grad()
-def mean_writes(model, tokenizer, texts: list, components: list[Component], device: str = "cpu"):
-    """Mean write of each component over every position of `texts`
-    (reduced inside the hook, so memory stays O(hidden))."""
+def mean_writes(model, tokenizer, texts: list, components: list[Component], skip_first: bool = True,
+                device: str = "cpu"):
+    """Mean write of each component over the positions of `texts` (reduced
+    inside the hook, so memory stays O(hidden)).
+
+    Position 0 is skipped by default: the first token in most language
+    models carries huge, atypical activations (an attention sink), and
+    averaging it in skews the mean that mean_ablate substitutes."""
     sums: dict[Component, torch.Tensor] = {}
     counts: dict[Component, int] = {}
     handles = []
@@ -316,6 +321,8 @@ def mean_writes(model, tokenizer, texts: list, components: list[Component], devi
     def make(c):
         def hook(_m, _i, out):
             x = _first(out)[0].float()
+            if skip_first and x.shape[0] > 1:
+                x = x[1:]
             sums[c] = sums.get(c, 0) + x.sum(0)
             counts[c] = counts.get(c, 0) + x.shape[0]
         return hook

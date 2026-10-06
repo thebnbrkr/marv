@@ -239,3 +239,38 @@ def test_cluster_features_finds_group_specific_columns():
     )
     tool_features = cluster_features(pa, "tool", min_group_activation=0.2, other_threshold=0.1, top_n=5)
     assert tool_features == [0]
+
+
+def test_diff_refuses_unrelated_models():
+    from marv.diagnostics import null_model
+    from marv.diff import lineage_score
+
+    m = tiny_model()
+    v, vnull = extract(m), extract(null_model(m))
+    assert lineage_score(v, v) > 0.99
+    assert abs(lineage_score(v, vnull)) < 0.3
+    with pytest.raises(ValueError, match="unrelated"):
+        diff(v, vnull)
+    assert len(diff(v, vnull, min_lineage=None)) > 0
+
+
+def test_vindex_records_provenance_and_stores_tied_head_once(tmp_path):
+    from marv.extract import VindexLite
+
+    cfg = LlamaConfig(vocab_size=64, hidden_size=16, intermediate_size=32, num_hidden_layers=2,
+                      num_attention_heads=2, tie_word_embeddings=True)
+    torch.manual_seed(0)
+    tied = LlamaForCausalLM(cfg)
+    v = extract(tied)
+    assert v.tied and v.exact and v.source_dtype == "float32"
+
+    untied = extract(tiny_model())
+    assert not untied.tied
+
+    v.revision = "abc123"
+    v.save(str(tmp_path / "t.npz"))
+    untied.save(str(tmp_path / "u.npz"))
+    back = VindexLite.load(str(tmp_path / "t.npz"))
+    assert back.tied and back.revision == "abc123" and back.source_dtype == "float32" and back.exact
+    np.testing.assert_array_equal(back.lm_head, v.embed)
+    assert (tmp_path / "t.npz").stat().st_size < (tmp_path / "u.npz").stat().st_size
