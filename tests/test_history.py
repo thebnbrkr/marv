@@ -183,3 +183,52 @@ def test_training_run_leaves_a_record_and_checkpoints_reload_exactly(tmp_path, w
     load = checkpoint_loader(str(tmp_path / "run"))
     stored = h.db.execute("SELECT weights_sha256 FROM versions WHERE label='step-4'").fetchone()[0]
     assert weights_sha256(load("step-4")) == stored  # the checkpoint on disk is exactly what was tested
+
+
+class _Scripted(torch.nn.Module):
+    """A stand-in model whose test answers are scripted, to pin down gate's logic."""
+
+    def __init__(self, seed, answers):
+        super().__init__()
+        self.w = torch.nn.Parameter(torch.full((2,), float(seed)))
+        self.answers = answers
+
+
+class _ScriptedTest(BatteryTest):
+    def run(self, model, tokenizer, device="cpu"):
+        return [(p.prompt, model.answers[p.prompt], 0.9 if model.answers[p.prompt] else 0.1,
+                 "right" if model.answers[p.prompt] else "wrong") for p in self.probes], True
+
+
+def test_gate_does_not_let_improvements_hide_protected_regressions(tmp_path):
+    # the Colab run's pattern: many format "improvements" on capitals, a few real
+    # regressions elsewhere. The net test passes; protecting a tag must fail it.
+    geo = [f"capital {i}" for i in range(16)]
+    sci = [f"science {i}" for i in range(4)]
+    test = _ScriptedTest("controls", [Probe(q, "x", ("geo",)) for q in geo] + [Probe(q, "x", ("science",)) for q in sci])
+    before = _Scripted(0, {**{q: False for q in geo}, **{q: True for q in sci}})
+    after = _Scripted(1, {**{q: True for q in geo}, **{q: False for q in sci}})
+    h = History(str(tmp_path / "h.sqlite"))
+    h.commit(before, None, "before", [test])
+    h.commit(after, None, "after", [test])
+
+    loose = h.gate("after", "before", ["controls"])
+    assert loose.passed and loose.tests[0].right_to_wrong == 4
+    assert [r[0] for r in loose.tests[0].regressions] == sci and loose.tests[0].regressions[0][3:] == ("right", "wrong")
+    assert loose.tests[0].by_tag == {"geo": (0, 16), "science": (4, 0)}
+    assert "outweigh" in loose.show()
+
+    strict = h.gate("after", "before", ["controls"], protect=["science"])
+    assert not strict.passed and strict.tests[0].protected_regressions == sci
+    assert not h.gate("after", "before", ["controls"], protect=["science 2"]).passed  # single items work too
+
+
+def test_databases_from_0_3_0_gain_the_top1_column(tmp_path):
+    import sqlite3
+
+    path = str(tmp_path / "old.sqlite")
+    old = sqlite3.connect(path)
+    old.executescript(__import__("marv.history", fromlist=["SCHEMA"]).SCHEMA.replace(", top1 TEXT", ""))
+    old.close()
+    h = History(path)
+    assert "top1" in [c[1] for c in h.db.execute("PRAGMA table_info(results)")]

@@ -1,10 +1,32 @@
 # Changelog
 
-Versions are git tags (`v0.3.0`). Depend on a tag, not on `main`:
+Versions are git tags (`v0.3.1`). Depend on a tag, not on `main`:
 
 ```
-marv @ git+https://github.com/thebnbrkr/marv@v0.3.0
+marv @ git+https://github.com/thebnbrkr/marv@v0.3.1
 ```
+
+## 0.3.1 (2026-10-06)
+
+Found by the first real History run (SmolLM2-135M taught a made-up fact on
+Colab): the gate passed although 9 control facts went right -> wrong, because
+16 "improvements" (mostly the model learning to answer "The capital of X is"
+with a name) outweighed them in the net test.
+
+### Fixed
+
+- `gate` no longer hides regressions behind improvements: the report lists
+  every right->wrong item with its score and what the model now answers, and
+  a per-tag breakdown, and says when the net test passes despite regressions.
+- `gate(protect=[...])` and `bisect(protect=[...])`: tags or items that must
+  not go right->wrong at all; any such regression fails.
+
+### Changed
+
+- Results store each item's top-1 answer (`top1`). Databases from 0.3.0 gain
+  the column automatically. `History.results` returns `(correct, score, top1)`.
+- The History notebook protects every non-capital control and saves every 5
+  steps.
 
 ## 0.3.0 (2026-10-06)
 

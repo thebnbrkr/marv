@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY, version_id INTEGER, test_id INTEGER, env_json TEXT,
     check_ok INTEGER, started_at TEXT, UNIQUE (version_id, test_id));
 CREATE TABLE IF NOT EXISTS results (
-    run_id INTEGER, item TEXT, correct INTEGER, score REAL, PRIMARY KEY (run_id, item));
+    run_id INTEGER, item TEXT, correct INTEGER, score REAL, top1 TEXT, PRIMARY KEY (run_id, item));
 """
 TABLES = ("versions", "source_files", "tests", "runs", "results")
 
@@ -63,8 +63,10 @@ class Test:
     def spec(self) -> dict:
         raise NotImplementedError
 
-    def run(self, model, tokenizer, device: str = "cpu") -> tuple[list[tuple[str, bool, float]], bool]:
-        """Returns ([(item_id, correct, score), ...], check_ok)."""
+    def run(self, model, tokenizer, device: str = "cpu") -> tuple[list[tuple], bool]:
+        """Returns ([(item_id, correct, score[, top1]), ...], check_ok). `top1`,
+        what the model actually answered, is optional but makes regressions
+        readable."""
         raise NotImplementedError
 
 
@@ -90,8 +92,8 @@ class BatteryTest(Test):
         from .evaluate import run_battery
 
         rows = run_battery(model, tokenizer, self.probes, device).rows
-        items = [(r.prompt, r.target_rank == 1, float(r.target_prob)) for r in rows]
-        ok = all(math.isfinite(s) and 0.0 <= s <= 1.0 + 1e-6 for _, _, s in items)
+        items = [(r.prompt, r.target_rank == 1, float(r.target_prob), r.top1) for r in rows]
+        ok = all(math.isfinite(s) and 0.0 <= s <= 1.0 + 1e-6 for _, _, s, _ in items)
         return items, ok
 
 
@@ -206,8 +208,13 @@ class TestComparison:
     p_regression: float
     mean_score_change: float
     score_change_ci: tuple[float, float]
-    regressed: bool
+    regressed: bool  # significant net regression, or any protected item went right -> wrong
     underpowered: bool  # too few items for any regression to reach significance
+    net_regressed: bool = False  # right->wrong significantly outnumber wrong->right
+    # every right->wrong item: (item, score before, score after, answer before, answer after)
+    regressions: list[tuple] = field(default_factory=list)
+    by_tag: dict[str, tuple[int, int]] = field(default_factory=dict)  # tag -> (right->wrong, wrong->right)
+    protected_regressions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -231,6 +238,20 @@ class GateReport:
             if t.underpowered:
                 lines.append(f"    warning: {t.n} items cannot show a regression at alpha={self.alpha} "
                              f"(needs at least {min_detectable_flips(self.alpha)} flips)")
+            if t.protected_regressions:
+                lines.append(f"    FAIL: {len(t.protected_regressions)} protected item(s) went right -> wrong")
+            elif t.regressions and not t.net_regressed:
+                lines.append(f"    note: {t.right_to_wrong} item(s) went right -> wrong; improvements elsewhere "
+                             "outweigh them, so the net test passes. Protect what must not break (protect=).")
+            tags = [f"{tag} {a}/{b}" for tag, (a, b) in sorted(t.by_tag.items()) if a]
+            if tags:
+                lines.append("    right->wrong / wrong->right by tag: " + ", ".join(tags))
+            for item, sb, sa, tb, ta in t.regressions[:10]:
+                mark = "  [protected]" if item in t.protected_regressions else ""
+                answer = f", answer {tb!r} -> {ta!r}" if tb is not None or ta is not None else ""
+                lines.append(f"    - {item!r}: score {sb:.3f} -> {sa:.3f}{answer}{mark}")
+            if len(t.regressions) > 10:
+                lines.append(f"    ... and {len(t.regressions) - 10} more")
         out = "\n".join(lines)
         print(out)
         return out
@@ -338,6 +359,8 @@ class History:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.executescript(SCHEMA)
+        if "top1" not in [c[1] for c in self.db.execute("PRAGMA table_info(results)")]:
+            self.db.execute("ALTER TABLE results ADD COLUMN top1 TEXT")  # databases from 0.3.0
         self.db.commit()
 
     # ---- versions and tests
@@ -404,13 +427,14 @@ class History:
                 "INSERT INTO runs (version_id, test_id, env_json, check_ok, started_at) VALUES (?,?,?,?,?)",
                 (version_id, test_id, json.dumps(env, sort_keys=True), int(ok),
                  datetime.now(timezone.utc).isoformat(timespec="seconds")))
-            self.db.executemany("INSERT INTO results VALUES (?,?,?,?)",
-                                [(cur.lastrowid, item, int(c), float(s)) for item, c, s in items])
+            self.db.executemany("INSERT INTO results (run_id, item, correct, score, top1) VALUES (?,?,?,?,?)",
+                                [(cur.lastrowid, it[0], int(it[1]), float(it[2]), it[3] if len(it) > 3 else None)
+                                 for it in items])
         self.db.commit()
         return label
 
-    def results(self, label: str, test_name: str) -> dict[str, tuple[bool, float]]:
-        """{item: (correct, score)} for one version and test. Raises if the run
+    def results(self, label: str, test_name: str) -> dict[str, tuple[bool, float, str | None]]:
+        """{item: (correct, score, top1)} for one version and test. Raises if the run
         is missing or its check failed: those numbers are never reported."""
         row = self.db.execute(
             "SELECT r.id, r.check_ok FROM runs r JOIN versions v ON v.id=r.version_id "
@@ -419,8 +443,14 @@ class History:
             raise KeyError(f"no run of {test_name!r} on {label!r}")
         if not row[1]:
             raise ValueError(f"the run of {test_name!r} on {label!r} failed its check; its numbers are not reported")
-        return {item: (bool(c), s) for item, c, s in
-                self.db.execute("SELECT item, correct, score FROM results WHERE run_id=?", (row[0],))}
+        return {item: (bool(c), s, t) for item, c, s, t in
+                self.db.execute("SELECT item, correct, score, top1 FROM results WHERE run_id=?", (row[0],))}
+
+    def item_tags(self, test_name: str) -> dict[str, tuple[str, ...]]:
+        """{item: tags} for a battery-style test (empty for other kinds)."""
+        row = self.db.execute("SELECT spec_json FROM tests WHERE name=?", (test_name,)).fetchone()
+        spec = json.loads(row[0]) if row else {}
+        return {p["prompt"]: tuple(p.get("tags", ())) for p in spec.get("probes", [])}
 
     # ---- log
     def log(self, test_name: str) -> Log:
@@ -440,32 +470,52 @@ class History:
         return Log(test_name, rows, hidden)
 
     # ---- gate
-    def compare(self, candidate: str, current: str, test_name: str, alpha: float = 0.05) -> TestComparison:
+    def compare(self, candidate: str, current: str, test_name: str, alpha: float = 0.05,
+                protect=()) -> TestComparison:
+        """Paired comparison of two versions on one test. `protect`: tags or
+        item ids that must not go right -> wrong at all."""
         a, b = self.results(current, test_name), self.results(candidate, test_name)
+        tags = self.item_tags(test_name)
+        protect = set(protect)
         common = sorted(set(a) & set(b))
-        r2w = sum(a[i][0] and not b[i][0] for i in common)
-        w2r = sum(b[i][0] and not a[i][0] for i in common)
+        down = [i for i in common if a[i][0] and not b[i][0]]
+        up = [i for i in common if b[i][0] and not a[i][0]]
+        by_tag: dict[str, list[int]] = {}
+        for i in down + up:
+            for tag in tags.get(i, ()):
+                by_tag.setdefault(tag, [0, 0])[0 if i in down else 1] += 1
+        protected = [i for i in down if i in protect or protect & set(tags.get(i, ()))]
         diffs = np.array([b[i][1] - a[i][1] for i in common])
-        p = mcnemar_regression_p(r2w, w2r)
-        return TestComparison(test_name, len(common), r2w, w2r, p,
+        p = mcnemar_regression_p(len(down), len(up))
+        net = len(down) > len(up) and p < alpha
+        return TestComparison(test_name, len(common), len(down), len(up), p,
                               float(diffs.mean()) if len(diffs) else float("nan"),
-                              paired_bootstrap_ci(diffs), regressed=(r2w > w2r and p < alpha),
-                              underpowered=len(common) < min_detectable_flips(alpha))
+                              paired_bootstrap_ci(diffs), regressed=net or bool(protected),
+                              underpowered=len(common) < min_detectable_flips(alpha), net_regressed=net,
+                              regressions=sorted(((i, a[i][1], b[i][1], a[i][2], b[i][2]) for i in down),
+                                                 key=lambda r: r[2] - r[1]),
+                              by_tag={k: (v[0], v[1]) for k, v in by_tag.items()},
+                              protected_regressions=protected)
 
-    def gate(self, candidate: str, current: str, test_names, alpha: float = 0.05) -> GateReport:
-        """Same tests, same items, both versions: FAIL if any test shows a
-        significant right->wrong regression (one-sided exact McNemar). Both
-        versions must already be committed with these tests."""
-        return GateReport(candidate, current, alpha, [self.compare(candidate, current, t, alpha) for t in test_names])
+    def gate(self, candidate: str, current: str, test_names, alpha: float = 0.05, protect=()) -> GateReport:
+        """Same tests, same items, both versions. FAIL if a test shows a
+        significant net right->wrong regression (one-sided exact McNemar), or
+        if any item or tag in `protect` went right -> wrong. The net test
+        alone lets improvements cancel regressions, so the report always lists
+        every regressed item with what the model now answers. Both versions
+        must already be committed with these tests."""
+        return GateReport(candidate, current, alpha,
+                          [self.compare(candidate, current, t, alpha, protect) for t in test_names])
 
     # ---- bisect
     def bisect(self, test: Test, labels: list[str], load, tokenizer, *, item: str | None = None,
-               alpha: float = 0.05, device: str = "cpu") -> BisectResult:
+               alpha: float = 0.05, protect=(), device: str = "cpu") -> BisectResult:
         """Find the first version in the ordered `labels` whose result on `test`
         differs from the first one's. `load(label)` returns that version's
         model; versions already committed with this test are not rerun.
-        "Differs" means: `item` flipped (if given), else a significant
-        right->wrong regression. Assumes the change persists once it appears."""
+        "Differs" means: `item` flipped (if given), else what `gate` calls a
+        regression (with the same `protect`). Assumes the change persists
+        once it appears."""
         good, runs, tested = labels[0], 0, []
 
         def ensure(label):
@@ -480,7 +530,7 @@ class History:
             ensure(label)
             if item is not None:
                 return self.results(label, test.name)[item][0] != self.results(good, test.name)[item][0]
-            return self.compare(label, good, test.name, alpha).regressed
+            return self.compare(label, good, test.name, alpha, protect).regressed
 
         ensure(good)
         if not changed(labels[-1]):
@@ -525,7 +575,7 @@ class History:
             runs += 1
             with revert_neurons(m_after, m_before, neurons):
                 got, _ = sub_test.run(m_after, tokenizer, device)
-            gain = sum(s for _, _, s in got) - sum(b[i][1] for i in items)
+            gain = sum(it[2] for it in got) - sum(b[i][1] for i in items)
             return gain / lost if lost > 0 else float("nan")
 
         ceiling = restored([n for n, _ in suspects]) if suspects else 0.0
